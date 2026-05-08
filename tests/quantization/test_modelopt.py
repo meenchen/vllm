@@ -120,6 +120,56 @@ def test_modelopt_mixed_precision_quantizes_parallel_lm_head():
     assert isinstance(method, ModelOptNvFp4LinearMethod)
 
 
+def test_modelopt_mixed_precision_quantizes_nested_parallel_lm_head():
+    config = _mixed_precision_config(
+        {"lm_head": {"quant_algo": "NVFP4", "group_size": 16}}
+    )
+
+    with patch(
+        "vllm.model_executor.layers.quantization.modelopt.init_nvfp4_linear_kernel"
+    ):
+        method = config.get_quant_method(
+            _mock_lm_head(), prefix="language_model.lm_head"
+        )
+
+    assert isinstance(method, ModelOptNvFp4LinearMethod)
+
+
+def test_modelopt_mixed_precision_resolves_qwen_vlm_prefix_aliases():
+    config = _mixed_precision_config(
+        {
+            "model.language_model.layers.0.linear_attn.out_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16,
+            },
+            "model.language_model.layers.0.linear_attn.in_proj_qkv": {
+                "quant_algo": "NVFP4",
+                "group_size": 16,
+            },
+            "model.language_model.layers.0.linear_attn.in_proj_z": {
+                "quant_algo": "NVFP4",
+                "group_size": 16,
+            },
+        }
+    )
+    config.packed_modules_mapping = {
+        "in_proj_qkvz": ["in_proj_qkv", "in_proj_z"]
+    }
+
+    assert (
+        config._resolve_quant_algo(
+            "language_model.model.layers.0.linear_attn.out_proj"
+        )
+        == "NVFP4"
+    )
+    assert (
+        config._resolve_quant_algo(
+            "language_model.model.layers.0.linear_attn.in_proj_qkvz"
+        )
+        == "NVFP4"
+    )
+
+
 def test_vocab_parallel_embedding_weight_loader_accepts_scalar_scale():
     holder = Mock()
     scale = torch.nn.Parameter(torch.empty(1))

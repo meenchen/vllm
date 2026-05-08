@@ -1538,16 +1538,39 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
         """
         Convert NVFP4 MoE weights into kernel format and setup the kernel.
         """
-
-        # Use a single gscale for w13.
+        # Kernels consume one global scale for the fused w13 matrix. ModelOpt
+        # can export separate global scales for w1 and w3, so fold the shard
+        # ratio into the block scales before using the shared per-expert scale.
+        w13_weight_scale_2 = layer.w13_weight_scale_2
         if self.moe.is_act_and_mul and not torch.allclose(
-            layer.w13_weight_scale_2[:, 0], layer.w13_weight_scale_2[:, 1]
+            w13_weight_scale_2[:, 0], w13_weight_scale_2[:, 1]
         ):
             logger.warning_once(
                 "w1_weight_scale_2 must match w3_weight_scale_2. "
-                "Accuracy may be affected."
+                "Folding per-shard ratios into w13 block scales."
             )
-        w13_weight_scale_2 = layer.w13_weight_scale_2[:, 0].contiguous()
+            common_w13_weight_scale_2 = w13_weight_scale_2.max(dim=1).values
+            safe_common_w13_weight_scale_2 = torch.where(
+                common_w13_weight_scale_2 == 0,
+                torch.ones_like(common_w13_weight_scale_2),
+                common_w13_weight_scale_2,
+            )
+            ratio = (
+                w13_weight_scale_2
+                / safe_common_w13_weight_scale_2.unsqueeze(1)
+            ).to(torch.float32)
+            w13_weight_scale = layer.w13_weight_scale.to(torch.float32)
+            intermediate = w13_weight_scale.shape[1] // 2
+            w13_weight_scale[:, :intermediate, :] *= ratio[:, 0].view(-1, 1, 1)
+            w13_weight_scale[:, intermediate:, :] *= ratio[:, 1].view(-1, 1, 1)
+            layer.w13_weight_scale.data.copy_(
+                w13_weight_scale.to(layer.w13_weight_scale.dtype)
+            )
+            w13_weight_scale_2 = common_w13_weight_scale_2
+        else:
+            w13_weight_scale_2 = w13_weight_scale_2[:, 0]
+
+        w13_weight_scale_2 = w13_weight_scale_2.contiguous()
 
         (
             w13,
@@ -2303,18 +2326,22 @@ class ModelOptMixedPrecisionConfig(ModelOptQuantConfigBase):
         is not found.
         """
         # 1. Direct lookup
-        if prefix in self.quantized_layers:
-            return self.quantized_layers[prefix]["quant_algo"].upper()
+        for candidate in self._quantized_layer_prefix_candidates(prefix):
+            if candidate in self.quantized_layers:
+                return self.quantized_layers[candidate]["quant_algo"].upper()
 
         # 2. Packed / fused layer lookup
         proj_name = prefix.rsplit(".", 1)[-1]
         if self.packed_modules_mapping and proj_name in self.packed_modules_mapping:
             algos: set[str] = set()
             base = prefix.rsplit(".", 1)[0]
-            for shard_name in self.packed_modules_mapping[proj_name]:
-                shard_prefix = f"{base}.{shard_name}"
-                if shard_prefix in self.quantized_layers:
-                    algos.add(self.quantized_layers[shard_prefix]["quant_algo"].upper())
+            for base_candidate in self._quantized_layer_prefix_candidates(base):
+                for shard_name in self.packed_modules_mapping[proj_name]:
+                    shard_prefix = f"{base_candidate}.{shard_name}"
+                    if shard_prefix in self.quantized_layers:
+                        algos.add(
+                            self.quantized_layers[shard_prefix]["quant_algo"].upper()
+                        )
             if len(algos) == 1:
                 return algos.pop()
             if len(algos) > 1:
@@ -2324,12 +2351,38 @@ class ModelOptMixedPrecisionConfig(ModelOptQuantConfigBase):
                 )
 
         # 3. Prefix-based lookup (for RoutedExperts / parent modules)
-        prefix_dot = prefix + "."
-        for key, info in self.quantized_layers.items():
-            if key.startswith(prefix_dot):
-                return info["quant_algo"].upper()
+        for candidate in self._quantized_layer_prefix_candidates(prefix):
+            prefix_dot = candidate + "."
+            for key, info in self.quantized_layers.items():
+                if key.startswith(prefix_dot):
+                    return info["quant_algo"].upper()
 
         return None
+
+    @staticmethod
+    def _quantized_layer_prefix_candidates(prefix: str) -> tuple[str, ...]:
+        candidates = [prefix]
+
+        # Qwen VLM wrappers can construct the LM head under a nested vLLM
+        # prefix while ModelOpt exports the tensor names as top-level lm_head.*.
+        if prefix.endswith(".lm_head"):
+            candidates.append("lm_head")
+
+        # Qwen3.5/3.6-MoE VLM prefixes can differ between vLLM and ModelOpt:
+        # vLLM uses language_model.model.layers.X..., while ModelOpt exports
+        # model.language_model.layers.X....
+        if prefix.startswith("language_model.model."):
+            candidates.append(
+                "model.language_model."
+                + prefix[len("language_model.model.") :]
+            )
+        elif prefix.startswith("model.language_model."):
+            candidates.append(
+                "language_model.model."
+                + prefix[len("model.language_model.") :]
+            )
+
+        return tuple(dict.fromkeys(candidates))
 
     def get_quant_method(
         self, layer: torch.nn.Module, prefix: str

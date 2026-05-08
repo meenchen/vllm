@@ -40,3 +40,22 @@ def test_qwen3_5_lm_head_receives_quant_config():
         MockLMHead.assert_called_once()
         call_kwargs = MockLMHead.call_args.kwargs
         assert call_kwargs["quant_config"] is mock_quant_config
+
+
+def test_qwen3_5_causal_mapper_accepts_vlm_export_prefixes():
+    from vllm.model_executor.models.qwen3_5 import Qwen3_5ForCausalLMBase
+
+    mapper = Qwen3_5ForCausalLMBase.hf_to_vllm_mapper
+
+    assert (
+        mapper._map_name("model.language_model.layers.0.self_attn.q_proj.weight")
+        == "model.layers.0.self_attn.q_proj.weight"
+    )
+    assert (
+        mapper._map_name("language_model.lm_head.weight")
+        == "lm_head.weight"
+    )
+    assert (
+        mapper._map_name("model.layers.0.self_attn.q_proj.weight")
+        == "model.layers.0.self_attn.q_proj.weight"
+    )
