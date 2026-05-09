@@ -1164,6 +1164,11 @@ def unify_kv_cache_spec_page_size(
     for layer_name, layer_spec in kv_cache_spec.items():
         if isinstance(layer_spec, AttentionSpec):
             per_token = _bytes_per_token(layer_spec)
+            if layer_spec.page_size_padded is not None:
+                new_spec = replace(layer_spec, page_size_padded=target)
+                assert new_spec.page_size_bytes == target
+                new_kv_cache_spec[layer_name] = new_spec
+                continue
             # Try clean block_size scaling first; preserve original block_size
             # as a divisor.
             if target % per_token == 0:

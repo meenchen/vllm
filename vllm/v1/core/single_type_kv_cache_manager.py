@@ -13,6 +13,7 @@ from vllm.v1.core.kv_cache_utils import (
     KVCacheBlock,
 )
 from vllm.v1.kv_cache_interface import (
+    AttentionSpec,
     ChunkedLocalAttentionSpec,
     CrossAttentionSpec,
     FirstNSpec,
@@ -273,6 +274,9 @@ class SingleTypeKVCacheManager(ABC):
             TQFullAttentionSpec,
             MLAAttentionSpec,
             HiddenStateCacheSpec,
+        ) or (
+            isinstance(self.kv_cache_spec, AttentionSpec)
+            and self.kv_cache_spec.requires_zeroing
         ):
             self.new_block_ids.extend(b.block_id for b in allocated_blocks)
 
@@ -306,6 +310,9 @@ class SingleTypeKVCacheManager(ABC):
                 TQFullAttentionSpec,
                 MLAAttentionSpec,
                 HiddenStateCacheSpec,
+            ) or (
+                isinstance(self.kv_cache_spec, AttentionSpec)
+                and self.kv_cache_spec.requires_zeroing
             ):
                 self.new_block_ids.extend(b.block_id for b in new_blocks)
             return new_blocks
