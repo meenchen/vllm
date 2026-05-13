@@ -94,6 +94,7 @@ from .qwen3_vl import (
 from .utils import (
     AutoWeightsLoader,
     PPMissingLayer,
+    WeightsMapper,
     _merge_multimodal_embeddings,
     extract_layer_index,
     is_pp_missing_parameter,
@@ -435,6 +436,14 @@ class Qwen3_5ForCausalLMBase(
     SupportsLoRA,
     SupportsPP,
 ):
+    hf_to_vllm_mapper = WeightsMapper(
+        orig_to_new_prefix={
+            "model.language_model.": "model.",
+            "language_model.model.": "model.",
+            "language_model.lm_head.": "lm_head.",
+        }
+    )
+
     packed_modules_mapping = {
         "qkv_proj": [
             "q_proj",
@@ -521,7 +530,7 @@ class Qwen3_5ForCausalLMBase(
             self,
             skip_prefixes=["mtp."],
         )
-        return loader.load_weights(weights)
+        return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
 
 
 class Qwen3_5ForCausalLM(Qwen3_5ForCausalLMBase):
