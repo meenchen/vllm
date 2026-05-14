@@ -164,6 +164,12 @@ class AttentionSpec(KVCacheSpec):
     kv_quant_mode: KVQuantMode = KVQuantMode.NONE
     page_size_padded: int | None = None
     indexes_kv_by_block_stride: bool = False
+    # The kernel block sizes the layer's attention backend supports. Carried
+    # on the spec so page-size unification doesn't need to look up the layer
+    # in ``static_forward_context``. That context does not exist in the core
+    # process under multi-process executors. Tuples for hashability; empty
+    # tuple means "not populated" (legacy callers that pre-date this field).
+    supported_kernel_block_sizes: tuple = ()
 
     @property
     def page_size_bytes(self) -> int:
@@ -290,6 +296,7 @@ class FullAttentionSpec(AttentionSpec):
             # If any layer in the group is non-causal, treat the group as
             # non-causal so the engine core disables incompatible scheduling.
             non_causal=any(spec.non_causal for spec in specs),
+            supported_kernel_block_sizes=specs[0].supported_kernel_block_sizes,
         )
         for spec in specs:
             for f in fields(AttentionSpec):
@@ -427,6 +434,7 @@ class MLAAttentionSpec(FullAttentionSpec):
             cache_dtype_str=cache_dtype_str_set.pop(),
             compress_ratio=compress_ratio_set.pop(),
             model_version=model_version_set.pop(),
+            supported_kernel_block_sizes=specs[0].supported_kernel_block_sizes,
         )
 
 
@@ -613,6 +621,7 @@ class SlidingWindowMLASpec(SlidingWindowSpec):
             cache_dtype_str=cache_dtype_str_set.pop(),
             compress_ratio=compress_ratio_set.pop(),
             model_version=model_version_set.pop(),
+            supported_kernel_block_sizes=specs[0].supported_kernel_block_sizes,
         )
 
     def is_uniform_with_collection(
@@ -724,6 +733,7 @@ class SinkFullAttentionSpec(FullAttentionSpec):
             sliding_window=cls.merge_window_sizes(sliding_window),
             attention_chunk_size=cls.merge_window_sizes(attention_chunk_size),
             non_causal=any(spec.non_causal for spec in specs),
+            supported_kernel_block_sizes=specs[0].supported_kernel_block_sizes,
         )
         for spec in specs:
             for f in fields(AttentionSpec):
