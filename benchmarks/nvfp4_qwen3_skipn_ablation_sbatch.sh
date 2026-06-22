@@ -51,12 +51,12 @@ case "$TASK" in
     ;;
   gpqa|GPQA|gpqa_diamond|GPQA_DIAMOND)
     TASK=gpqa
-    EVAL_KIND=${GPQA_EVAL_KIND:-simple_evals.GPQA}
-    EVAL_TYPE=${GPQA_EVAL_TYPE:-GPQA}
-    EVAL_TASK=${GPQA_EVAL_TASK:-GPQA}
-    DEFAULT_NUM_REPEATS=1
+    EVAL_KIND=${GPQA_EVAL_KIND:-simple_evals.gpqa_diamond_aa_v3}
+    EVAL_TYPE=${GPQA_EVAL_TYPE:-gpqa_diamond_aa_v3}
+    EVAL_TASK=${GPQA_EVAL_TASK:-gpqa_diamond}
+    DEFAULT_NUM_REPEATS=8
     CLIENT_IMAGE=${GPQA_CLIENT_IMAGE:-gitlab-master.nvidia.com/dl/joc/competitive_evaluation/nvidia-core-evals/ci-llm/simple-evals:26.01}
-    SECRET_FILE=${SECRET_FILE:-$BASE/eval_rundirs/kv_study/qwen3_8b/nvfp4_kv_bnd_nightly/20260422_221445-abb0a9b26af0a22e/simple_evals.AIME_2025/.secrets.env}
+    SECRET_FILE=${SECRET_FILE:-$BASE/eval_rundirs/kv_study/qwen3_8b/nvfp4_kv_bnd_nightly/20260422_221445-abb0a9b26af0a22e/simple_evals.gpqa_diamond_aa_v3/.secrets.env}
     ;;
   lcb|livecodebench|LCB)
     TASK=lcb
@@ -73,6 +73,50 @@ case "$TASK" in
     ;;
 esac
 NUM_REPEATS=${NUM_REPEATS:-$DEFAULT_NUM_REPEATS}
+
+CUSTOM_CONFIG_YAML="      custom_config: null"
+if [[ "$TASK" == gpqa ]]; then
+  read -r -d '' CUSTOM_CONFIG_YAML <<'EOF' || true
+      custom_config:
+        extraction:
+        - match_group: 1
+          name: primary_answer_format
+          regex: (?i)[\*\_]{0,2}Answer[\*\_]{0,2}\s*:[\s\*\_]{0,2}\s*([A-Z])(?![a-zA-Z0-9])
+        - match_group: 1
+          name: latex_boxed
+          regex: \\boxed\{[^}]*([A-Z])[^}]*\}
+        - match_group: 1
+          name: natural_language
+          regex: answer is ([a-zA-Z])
+        - match_group: 1
+          name: with_parenthesis
+          regex: answer is \(([a-zA-Z])\)
+        - match_group: 1
+          name: choice_format
+          regex: ([A-Z])\)\s*[^A-Z]*
+        - match_group: 1
+          name: explicit_statement
+          regex: ([A-Z])\s+is\s+the\s+correct\s+answer
+        - match_group: 1
+          name: standalone_letter_end
+          regex: ([A-Z])\s*$
+        - match_group: 1
+          name: letter_with_period
+          regex: ([A-Z])\s*\.
+        - match_group: 1
+          name: letter_nonword
+          regex: ([A-Z])\s*[^\w]
+        prompt_template: |-
+          Answer the following multiple choice question. The last line of your response should be in the following format: 'Answer: A/B/C/D' (e.g. 'Answer: A').
+
+          {Question}
+
+          A) {A}
+          B) {B}
+          C) {C}
+          D) {D}
+EOF
+fi
 
 mkdir -p "$TASK_DIR/logs" "$TASK_DIR/artifacts"
 echo "${SLURM_JOB_ID:-manual}" >> "$TASK_DIR/.slurm_job_id.list"
@@ -350,7 +394,7 @@ config:
   params:
     extra:
       add_system_prompt: false
-      custom_config: null
+${CUSTOM_CONFIG_YAML}
       downsampling_ratio: null
       judge:
         api_key: JUDGE_API_KEY
