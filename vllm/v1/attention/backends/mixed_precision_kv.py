@@ -28,11 +28,6 @@ from vllm.v1.attention.backend import (
     CommonAttentionMetadata,
 )
 from vllm.v1.attention.backends.flashinfer import FlashInferBackend
-from vllm.v1.core.single_type_kv_cache_manager import (
-    FirstNManager,
-    SlidingWindowManager,
-    spec_manager_map,
-)
 from vllm.v1.kv_cache_interface import FirstNSpec, KVCacheSpec, SlidingWindowSpec
 
 # Sentinel suffix appended to the parent attention layer prefix when
@@ -56,12 +51,6 @@ class MixedKVSlidingWindowSpec(SlidingWindowSpec):
 @dataclass(frozen=True, kw_only=True)
 class MixedKVFirstNSpec(FirstNSpec):
     requires_zeroing: ClassVar[bool] = True
-
-
-# ``spec_manager_map`` is keyed by exact ``type``; the subclasses above need
-# explicit entries so the manager lookup picks the parent's manager class.
-spec_manager_map[MixedKVSlidingWindowSpec] = SlidingWindowManager
-spec_manager_map[MixedKVFirstNSpec] = FirstNManager
 
 
 def mixed_kv_layer_prefix(parent_prefix: str) -> str:
