@@ -18,6 +18,7 @@ import yaml
 
 TASK_ORDER = ("aime25", "gpqa", "lcb")
 CASE_ORDER = (
+    "bf16",
     "fp8",
     "default_nvfp4",
     "four_over_six",
