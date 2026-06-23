@@ -45,7 +45,7 @@ case "$TASK" in
     EVAL_KIND=simple_evals.AIME_2025
     EVAL_TYPE=AIME_2025
     EVAL_TASK=AIME_2025
-    DEFAULT_NUM_REPEATS=34
+    DEFAULT_NUM_REPEATS=${AIME_NUM_REPEATS:-64}
     CLIENT_IMAGE=${AIME_CLIENT_IMAGE:-gitlab-master.nvidia.com/dl/joc/competitive_evaluation/nvidia-core-evals/ci-llm/simple-evals:26.01}
     SECRET_FILE=${SECRET_FILE:-$BASE/eval_rundirs/kv_study/qwen3_8b/nvfp4_kv_bnd_nightly/20260422_221445-abb0a9b26af0a22e/simple_evals.AIME_2025/.secrets.env}
     ;;
@@ -54,7 +54,7 @@ case "$TASK" in
     EVAL_KIND=${GPQA_EVAL_KIND:-simple_evals.gpqa_diamond_aa_v3}
     EVAL_TYPE=${GPQA_EVAL_TYPE:-gpqa_diamond_aa_v3}
     EVAL_TASK=${GPQA_EVAL_TASK:-gpqa_diamond}
-    DEFAULT_NUM_REPEATS=8
+    DEFAULT_NUM_REPEATS=${GPQA_NUM_REPEATS:-64}
     CLIENT_IMAGE=${GPQA_CLIENT_IMAGE:-gitlab-master.nvidia.com/dl/joc/competitive_evaluation/nvidia-core-evals/ci-llm/simple-evals:26.01}
     SECRET_FILE=${SECRET_FILE:-$BASE/eval_rundirs/kv_study/qwen3_8b/nvfp4_kv_bnd_nightly/20260422_221445-abb0a9b26af0a22e/simple_evals.gpqa_diamond_aa_v3/.secrets.env}
     ;;
@@ -63,7 +63,7 @@ case "$TASK" in
     EVAL_KIND=ns_livecodebench
     EVAL_TYPE=ns_livecodebench
     EVAL_TASK=livecodebench
-    DEFAULT_NUM_REPEATS=3
+    DEFAULT_NUM_REPEATS=${LCB_NUM_REPEATS:-8}
     CLIENT_IMAGE=${LCB_CLIENT_IMAGE:-nvcr.io/nvidia/eval-factory/nemo-skills:26.03}
     SECRET_FILE=${SECRET_FILE:-$BASE/eval_rundirs/kv_study/qwen3_8b/nvfp4_kv_bnd_nightly/20260422_221445-abb0a9b26af0a22e/ns_livecodebench/.secrets.env}
     ;;
