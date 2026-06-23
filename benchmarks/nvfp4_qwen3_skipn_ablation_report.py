@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,15 +18,14 @@ import yaml
 
 
 TASK_ORDER = ("aime25", "gpqa", "lcb")
-CASE_ORDER = (
+BASE_CASE_ORDER = (
     "bf16",
     "fp8",
     "default_nvfp4",
     "four_over_six",
-    "skip_first_512",
-    "skip_last_512",
-    "skip_first_512_four_over_six",
-    "skip_last_512_four_over_six",
+)
+SKIP_CASE_RE = re.compile(
+    r"^skip_(first|last)_([0-9]+)(?:_(four_over_six|4over6))?$"
 )
 
 
@@ -154,13 +154,39 @@ def _read_text(path: Path) -> str:
         return ""
 
 
+def _skip_case(location: str, skip_tokens: int, stacked: bool = False) -> str:
+    suffix = "_four_over_six" if stacked else ""
+    return f"skip_{location}_{skip_tokens}{suffix}"
+
+
+def _case_sort_key(case: str) -> tuple[int, int, int, int, str]:
+    if case in BASE_CASE_ORDER:
+        return BASE_CASE_ORDER.index(case), 0, 0, 0, case
+    match = SKIP_CASE_RE.match(case)
+    if match:
+        location, tokens, stack = match.groups()
+        location_rank = 0 if location == "first" else 1
+        stack_rank = 1 if stack else 0
+        return len(BASE_CASE_ORDER), int(tokens), stack_rank, location_rank, case
+    return 999, 0, 0, 0, case
+
+
+def _skip_tokens(rows: list["EvalRow"]) -> list[int]:
+    tokens = set()
+    for row in rows:
+        match = SKIP_CASE_RE.match(row.case)
+        if match:
+            tokens.add(int(match.group(2)))
+    return sorted(tokens)
+
+
 def collect(root: Path) -> list[EvalRow]:
     rows: list[EvalRow] = []
     if not root.exists():
         return rows
     case_dirs = sorted(
         [p for p in root.iterdir() if p.is_dir()],
-        key=lambda p: CASE_ORDER.index(p.name) if p.name in CASE_ORDER else 999,
+        key=lambda p: _case_sort_key(p.name),
     )
     for case_dir in case_dirs:
         task_dirs = sorted(
@@ -271,28 +297,34 @@ def render_html(root: Path, rows: list[EvalRow], title: str, sha: str) -> str:
         return _delta(row_map.get((case, task)), default_baseline.get(task))
 
     takeaways = [
-        "Skip-last-512 was the strongest skip-N candidate in this run: "
-        f"AIME25 {delta_for('skip_last_512', 'aime25')}, "
-        f"GPQA {delta_for('skip_last_512', 'gpqa')}, "
-        f"LCB {delta_for('skip_last_512', 'lcb')} vs default NVFP4.",
-        "Skip-first-512 did not help this Qwen3-8B setting: "
-        f"AIME25 {delta_for('skip_first_512', 'aime25')}, "
-        f"GPQA {delta_for('skip_first_512', 'gpqa')}, "
-        f"LCB {delta_for('skip_first_512', 'lcb')} vs default NVFP4.",
-        "Stacking skip-last-512 with 4-over-6 preserved most of the AIME/LCB "
-        "gain but lost GPQA in this run: "
-        f"AIME25 {delta_for('skip_last_512_four_over_six', 'aime25')}, "
-        f"GPQA {delta_for('skip_last_512_four_over_six', 'gpqa')}, "
-        f"LCB {delta_for('skip_last_512_four_over_six', 'lcb')} vs default "
-        "NVFP4.",
-        "Standalone 4-over-6 was neutral on LCB and close to default NVFP4 on "
-        "AIME/GPQA for this matrix: "
+        "Standalone 4-over-6 vs default NVFP4: "
         f"AIME25 {delta_for('four_over_six', 'aime25')}, "
         f"GPQA {delta_for('four_over_six', 'gpqa')}, "
         f"LCB {delta_for('four_over_six', 'lcb')} vs default NVFP4.",
-        f"CUDA graph evidence was present for {cuda_graph_complete}/{len(rows)} "
-        "rows.",
     ]
+    for skip_n in _skip_tokens(rows):
+        takeaways.extend([
+            f"Skip-first-{skip_n} vs default NVFP4: "
+            f"AIME25 {delta_for(_skip_case('first', skip_n), 'aime25')}, "
+            f"GPQA {delta_for(_skip_case('first', skip_n), 'gpqa')}, "
+            f"LCB {delta_for(_skip_case('first', skip_n), 'lcb')}.",
+            f"Skip-last-{skip_n} vs default NVFP4: "
+            f"AIME25 {delta_for(_skip_case('last', skip_n), 'aime25')}, "
+            f"GPQA {delta_for(_skip_case('last', skip_n), 'gpqa')}, "
+            f"LCB {delta_for(_skip_case('last', skip_n), 'lcb')}.",
+            f"Skip-first-{skip_n} + 4-over-6 vs default NVFP4: "
+            f"AIME25 {delta_for(_skip_case('first', skip_n, True), 'aime25')}, "
+            f"GPQA {delta_for(_skip_case('first', skip_n, True), 'gpqa')}, "
+            f"LCB {delta_for(_skip_case('first', skip_n, True), 'lcb')}.",
+            f"Skip-last-{skip_n} + 4-over-6 vs default NVFP4: "
+            f"AIME25 {delta_for(_skip_case('last', skip_n, True), 'aime25')}, "
+            f"GPQA {delta_for(_skip_case('last', skip_n, True), 'gpqa')}, "
+            f"LCB {delta_for(_skip_case('last', skip_n, True), 'lcb')}.",
+        ])
+    takeaways.append(
+        f"CUDA graph evidence was present for {cuda_graph_complete}/{len(rows)} "
+        "rows."
+    )
     takeaway_html = "\n".join(
         f"<li>{html.escape(takeaway)}</li>" for takeaway in takeaways
     )
