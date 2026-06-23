@@ -78,6 +78,8 @@ def get_flash_attn_version(
     if current_platform.is_rocm():
         # ROCm doesn't use vllm_flash_attn; return None to skip fa_version arg
         return None
+    if current_platform.is_cuda() and not _CUDA_FLASH_ATTN_AVAILABLE:
+        return None
     try:
         from vllm.vllm_flash_attn.flash_attn_interface import (
             fa_version_unsupported_reason,
