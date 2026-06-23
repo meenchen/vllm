@@ -204,6 +204,7 @@ unset VLLM_ASYNC_NVFP4_KV_QUANT_ALGO
 
 server_extra_args=()
 export VLLM_NVFP4_KV_QUANT_ALGO=default
+requires_trtllm_lse=0
 
 if [[ "$FORCE_TRTLLM_ATTENTION" == "1" ]]; then
   server_extra_args+=(--attention-config.use_trtllm_attention true)
@@ -226,6 +227,7 @@ case "$CASE" in
     if [[ "$CASE" =~ ^skip_(first|last)_([0-9]+)(_four_over_six|_4over6)?$ ]]; then
       skip_location="${BASH_REMATCH[1]}"
       skip_tokens="${BASH_REMATCH[2]}"
+      requires_trtllm_lse=1
       if [[ -n "${BASH_REMATCH[3]:-}" ]]; then
         export VLLM_NVFP4_KV_QUANT_ALGO=four_over_six
       fi
@@ -246,6 +248,33 @@ case "$CASE" in
     ;;
 esac
 
+flashinfer_version=unknown
+if [[ "$requires_trtllm_lse" == "1" ]]; then
+  flashinfer_version=$(source "$VENV/bin/activate" && python - <<'PY'
+import inspect
+
+import flashinfer
+from flashinfer.decode import trtllm_batch_decode_with_kv_cache
+
+params = inspect.signature(trtllm_batch_decode_with_kv_cache).parameters
+version = getattr(flashinfer, "__version__", "unknown")
+if "return_lse" not in params or "lse" not in params:
+    raise SystemExit(
+        "mixed skip-N NVFP4 KV requires FlashInfer TRTLLM decode with "
+        f"return_lse/lse support; installed flashinfer={version}"
+    )
+print(version)
+PY
+)
+else
+  flashinfer_version=$(source "$VENV/bin/activate" && python - <<'PY'
+import flashinfer
+
+print(getattr(flashinfer, "__version__", "unknown"))
+PY
+)
+fi
+
 cat > "$TASK_DIR/artifacts/launcher_config.yaml" <<EOF
 task: $TASK
 eval_kind: $EVAL_KIND
@@ -262,6 +291,8 @@ parallelism: $PARALLELISM
 limit_samples: ${LIMIT_SAMPLES:-null}
 kv_algo: ${VLLM_NVFP4_KV_QUANT_ALGO}
 skip_dtype: $SKIP_DTYPE
+requires_trtllm_lse: $requires_trtllm_lse
+flashinfer_version: $flashinfer_version
 force_trtllm_attention: $FORCE_TRTLLM_ATTENTION
 cuda_graph: enabled_by_default_no_enforce_eager
 server_extra_args: $(printf '%q ' "${server_extra_args[@]}")
