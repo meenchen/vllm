@@ -64,6 +64,34 @@ def _load_json(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _normalize_score(value: Any) -> float | None:
+    score = _float_or_none(value)
+    if score is None:
+        return None
+    return score / 100.0 if abs(score) > 1.0 else score
+
+
+def _score_from_metric(
+    metric: dict[str, Any],
+    preferred_scores: tuple[str, ...],
+) -> tuple[float | None, float | None]:
+    scores = metric.get("scores", {})
+    if not isinstance(scores, dict):
+        return None, None
+    keys = list(preferred_scores)
+    keys.extend(key for key in scores if key not in preferred_scores)
+    for key in keys:
+        score_data = scores.get(key)
+        if not isinstance(score_data, dict):
+            continue
+        score = _normalize_score(score_data.get("value"))
+        if score is None:
+            continue
+        stderr = score_data.get("stats", {}).get("stderr")
+        return score, _float_or_none(stderr)
+    return None, None
+
+
 def _first_score(results: dict[str, Any]) -> tuple[float | None, float | None]:
     groups = results.get("results", {}).get("groups", {})
     tasks = results.get("results", {}).get("tasks", {})
@@ -71,19 +99,17 @@ def _first_score(results: dict[str, Any]) -> tuple[float | None, float | None]:
         if not isinstance(collection, dict):
             continue
         for item in collection.values():
-            scores = (
-                item.get("metrics", {})
-                .get("score", {})
-                .get("scores", {})
-            )
-            if not isinstance(scores, dict):
+            metrics = item.get("metrics", {})
+            if not isinstance(metrics, dict):
                 continue
-            for score_data in scores.values():
-                if not isinstance(score_data, dict):
-                    continue
-                score = score_data.get("value")
-                stderr = score_data.get("stats", {}).get("stderr")
-                return _float_or_none(score), _float_or_none(stderr)
+            score, stderr = _score_from_metric(metrics.get("score", {}),
+                                               ("accuracy", "score"))
+            if score is not None:
+                return score, stderr
+            score, stderr = _score_from_metric(metrics.get("pass@1", {}),
+                                               ("accuracy", ))
+            if score is not None:
+                return score, stderr
     return None, None
 
 
