@@ -51,6 +51,9 @@ USE_PRECOMPILED_EXTENSIONS = envs.VLLM_USE_PRECOMPILED
 EXPERIMENTAL_SKIP_MOE_EXT = os.getenv(
     "VLLM_EXPERIMENTAL_SKIP_MOE_EXT", ""
 ).lower() in ("1", "true", "yes", "on")
+EXPERIMENTAL_SKIP_OPTIONAL_CUDA_EXTS = os.getenv(
+    "VLLM_EXPERIMENTAL_SKIP_OPTIONAL_CUDA_EXTS", ""
+).lower() in ("1", "true", "yes", "on")
 # VLLM_USE_PRECOMPILED implies precompiled rust frontend too.
 USE_PRECOMPILED_RUST_FRONTEND = (
     envs.VLLM_USE_PRECOMPILED or envs.VLLM_USE_PRECOMPILED_RUST
@@ -1111,7 +1114,7 @@ if sys.version_info >= (3, 11):
 if _is_hip():
     ext_modules.append(CMakeExtension(name="vllm._rocm_C"))
 
-if _is_cuda():
+if _is_cuda() and not EXPERIMENTAL_SKIP_OPTIONAL_CUDA_EXTS:
     ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa2_C"))
     if USE_PRECOMPILED_EXTENSIONS or (
         CUDA_HOME and get_nvcc_cuda_version() >= Version("12.3")
