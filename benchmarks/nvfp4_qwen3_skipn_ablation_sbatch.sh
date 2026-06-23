@@ -374,7 +374,7 @@ config:
       num_repeats: $NUM_REPEATS
       prompt_config: null
       ruler:
-        cluster: null
+        cluster: local
         data_dir: /lcb-data
         max_seq_length: null
         num_samples: null
@@ -487,6 +487,8 @@ client_cmd='
 set -euo pipefail
 export HF_HOME=/hf-cache
 export HUGGINGFACE_HUB_CACHE=/hf-cache/hub
+export HF_HUB_OFFLINE=${CLIENT_HF_HUB_OFFLINE:-0}
+export TRANSFORMERS_OFFLINE=${CLIENT_TRANSFORMERS_OFFLINE:-0}
 export API_KEY=${DUMMY_API_KEY:-dummy}
 cp /results/config_ef.yaml config_ef.yaml
 cmd=$(command -v nemo-evaluator >/dev/null 2>&1 && echo nemo-evaluator || echo eval-factory)
