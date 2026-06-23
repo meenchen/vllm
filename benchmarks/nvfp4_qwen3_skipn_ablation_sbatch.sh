@@ -76,7 +76,7 @@ NUM_REPEATS=${NUM_REPEATS:-$DEFAULT_NUM_REPEATS}
 
 CUSTOM_CONFIG_YAML="      custom_config: null"
 if [[ "$TASK" == gpqa ]]; then
-  read -r -d '' CUSTOM_CONFIG_YAML <<'EOF' || true
+  IFS= read -r -d '' CUSTOM_CONFIG_YAML <<'EOF' || true
       custom_config:
         extraction:
         - match_group: 1
@@ -355,7 +355,7 @@ config:
   params:
     extra:
       args: null
-      data_dir: null
+      data_dir: /lcb-data
       dataset_split: test_v6_2408_2505
       judge:
         api_key: null
@@ -375,7 +375,7 @@ config:
       prompt_config: null
       ruler:
         cluster: null
-        data_dir: null
+        data_dir: /lcb-data
         max_seq_length: null
         num_samples: null
         setup: null
@@ -495,7 +495,7 @@ $cmd run_eval --run_config config_ef.yaml
 
 mounts="$TASK_DIR/artifacts:/results,$BASE/hf_cache:/hf-cache"
 if [[ "$TASK" == lcb ]]; then
-  mounts="$mounts,$BASE/datasets/livecodebench:/opt/venv/lib/python3.12/site-packages/nemo_skills/dataset/livecodebench"
+  mounts="$mounts,$BASE/datasets/livecodebench:/lcb-data,$BASE/datasets/livecodebench:/opt/venv/lib/python3.12/site-packages/nemo_skills/dataset/livecodebench"
 fi
 
 echo "Starting $EVAL_KIND client for CASE=$CASE"
