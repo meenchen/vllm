@@ -48,6 +48,9 @@ rust_build = load_module_from_path(
 
 VLLM_TARGET_DEVICE = envs.VLLM_TARGET_DEVICE
 USE_PRECOMPILED_EXTENSIONS = envs.VLLM_USE_PRECOMPILED
+EXPERIMENTAL_SKIP_MOE_EXT = os.getenv(
+    "VLLM_EXPERIMENTAL_SKIP_MOE_EXT", ""
+).lower() in ("1", "true", "yes", "on")
 # VLLM_USE_PRECOMPILED implies precompiled rust frontend too.
 USE_PRECOMPILED_RUST_FRONTEND = (
     envs.VLLM_USE_PRECOMPILED or envs.VLLM_USE_PRECOMPILED_RUST
@@ -1155,7 +1158,8 @@ if _build_custom_ops():
         ext_modules.append(CMakeExtension(name="vllm._C"))
     if _is_cuda() or _is_hip():
         ext_modules.append(CMakeExtension(name="vllm._C_stable_libtorch"))
-        ext_modules.append(CMakeExtension(name="vllm._moe_C_stable_libtorch"))
+        if not EXPERIMENTAL_SKIP_MOE_EXT:
+            ext_modules.append(CMakeExtension(name="vllm._moe_C_stable_libtorch"))
 
 package_data = {
     "vllm": [
