@@ -355,7 +355,7 @@ config:
   params:
     extra:
       args: null
-      data_dir: /lcb-data
+      data_dir: null
       dataset_split: test_v6_2408_2505
       judge:
         api_key: null
@@ -374,8 +374,8 @@ config:
       num_repeats: $NUM_REPEATS
       prompt_config: null
       ruler:
-        cluster: local
-        data_dir: /lcb-data
+        cluster: null
+        data_dir: null
         max_seq_length: null
         num_samples: null
         setup: null
