@@ -286,6 +286,7 @@ server_cmd=(
   --max-model-len "$MAX_MODEL_LEN"
   --dtype bfloat16
   --max-cudagraph-capture-size 256
+  --compilation-config '{"pass_config":{"fuse_allreduce_rms":false}}'
 )
 server_cmd+=("${server_extra_args[@]}")
 server_cmd_quoted=$(printf '%q ' "${server_cmd[@]}")
