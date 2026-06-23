@@ -201,8 +201,9 @@ def collect(root: Path) -> list[EvalRow]:
     return rows
 
 
-def _delta(row: EvalRow, baseline: EvalRow | None) -> str:
-    if row.score is None or baseline is None or baseline.score is None:
+def _delta(row: EvalRow | None, baseline: EvalRow | None) -> str:
+    if (row is None or row.score is None or baseline is None
+            or baseline.score is None):
         return "missing"
     return f"{100.0 * (row.score - baseline.score):+.2f} pp"
 
@@ -223,9 +224,11 @@ def _case_label(case: str) -> str:
 def render_html(root: Path, rows: list[EvalRow], title: str, sha: str) -> str:
     default_baseline = _baseline_map(rows, "default_nvfp4")
     fp8_baseline = _baseline_map(rows, "fp8")
+    row_map = {(row.case, row.task): row for row in rows}
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     complete = sum(1 for row in rows if row.status == "complete")
     missing = sum(1 for row in rows if row.status != "complete")
+    cuda_graph_complete = sum(1 for row in rows if row.cuda_graph)
 
     table_rows = []
     for row in rows:
@@ -263,6 +266,36 @@ def render_html(root: Path, rows: list[EvalRow], title: str, sha: str) -> str:
         )
     if not best_by_task:
         best_by_task.append("<li>No completed accuracy rows yet.</li>")
+
+    def delta_for(case: str, task: str) -> str:
+        return _delta(row_map.get((case, task)), default_baseline.get(task))
+
+    takeaways = [
+        "Skip-last-512 was the strongest skip-N candidate in this run: "
+        f"AIME25 {delta_for('skip_last_512', 'aime25')}, "
+        f"GPQA {delta_for('skip_last_512', 'gpqa')}, "
+        f"LCB {delta_for('skip_last_512', 'lcb')} vs default NVFP4.",
+        "Skip-first-512 did not help this Qwen3-8B setting: "
+        f"AIME25 {delta_for('skip_first_512', 'aime25')}, "
+        f"GPQA {delta_for('skip_first_512', 'gpqa')}, "
+        f"LCB {delta_for('skip_first_512', 'lcb')} vs default NVFP4.",
+        "Stacking skip-last-512 with 4-over-6 preserved most of the AIME/LCB "
+        "gain but lost GPQA in this run: "
+        f"AIME25 {delta_for('skip_last_512_four_over_six', 'aime25')}, "
+        f"GPQA {delta_for('skip_last_512_four_over_six', 'gpqa')}, "
+        f"LCB {delta_for('skip_last_512_four_over_six', 'lcb')} vs default "
+        "NVFP4.",
+        "Standalone 4-over-6 was neutral on LCB and close to default NVFP4 on "
+        "AIME/GPQA for this matrix: "
+        f"AIME25 {delta_for('four_over_six', 'aime25')}, "
+        f"GPQA {delta_for('four_over_six', 'gpqa')}, "
+        f"LCB {delta_for('four_over_six', 'lcb')} vs default NVFP4.",
+        f"CUDA graph evidence was present for {cuda_graph_complete}/{len(rows)} "
+        "rows.",
+    ]
+    takeaway_html = "\n".join(
+        f"<li>{html.escape(takeaway)}</li>" for takeaway in takeaways
+    )
 
     html_rows = "\n".join(table_rows)
     best_html = "\n".join(best_by_task)
@@ -378,8 +411,9 @@ def render_html(root: Path, rows: list[EvalRow], title: str, sha: str) -> str:
   <header>
     <h1>{html.escape(title)}</h1>
     <p class="summary">Qwen3-8B ablation for NVFP4 KV skip-first / skip-last windows,
-    stacked with the 4-over-6 NVFP4 scale search. Baselines are FP8 KV and default
-    NVFP4 KV. Scores are reported exactly as emitted by eval-factory.</p>
+    stacked with the 4-over-6 NVFP4 scale search. Baselines are BF16, FP8 KV, and
+    default NVFP4 KV. LCB pass@1 is normalized to the same percentage display as
+    the other tasks.</p>
     <div class="meta">
       <div><span>Eval root</span>{html.escape(str(root))}</div>
       <div><span>Branch SHA</span>{html.escape(sha or "unknown")}</div>
@@ -395,6 +429,11 @@ def render_html(root: Path, rows: list[EvalRow], title: str, sha: str) -> str:
     <p class="note">Delta columns are absolute percentage-point deltas from the
     corresponding task baseline. CUDA graph evidence is based on server logs
     containing "Graph capturing finished".</p>
+
+    <h2>Ablation Learnings</h2>
+    <ul>
+      {takeaway_html}
+    </ul>
 
     <h2>Results</h2>
     <table>
