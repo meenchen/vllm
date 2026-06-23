@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Qwen3-8B NVFP4 KV Skip-128 / 4-over-6 Ablation</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #16202a;
+      --muted: #5f6d7a;
+      --line: #d7dde3;
+      --surface: #f7f9fb;
+      --accent: #145a7a;
+      --accent-2: #7b3f00;
+      --ok: #12653d;
+    }
+    body {
+      margin: 0;
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: #fff;
+    }
+    header {
+      padding: 28px 32px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    h2 {
+      margin: 28px 0 12px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+    main {
+      padding: 0 32px 40px;
+    }
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .meta div {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .meta span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .summary {
+      max-width: 980px;
+      color: var(--muted);
+    }
+    ul {
+      margin: 8px 0 0 18px;
+      padding: 0;
+    }
+    li {
+      margin: 6px 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 13px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 8px 9px;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      text-align: left;
+      background: #eef3f6;
+      color: #263746;
+      font-weight: 650;
+    }
+    .case {
+      font-weight: 650;
+    }
+    .metric {
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .note {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .status {
+      color: var(--ok);
+      font-weight: 650;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Qwen3-8B NVFP4 KV Skip-128 / 4-over-6 Ablation</h1>
+    <p class="summary">Qwen3-8B ablation for NVFP4 KV skip-first / skip-last windows,
+    stacked with the 4-over-6 NVFP4 scale search. Baselines are BF16, FP8 KV, and
+    default NVFP4 KV. LCB pass@1 is normalized to the same percentage display as
+    the other tasks.</p>
+    <div class="meta">
+      <div><span>Eval root</span>/scratch/fsw/portfolios/coreai/projects/coreai_numerics_nextgen/users/weimingc/eval_rundirs/kv_study/qwen3_8b/skipn128_full_20260622_224930</div>
+      <div><span>Branch SHA</span>eval 62d5a1caf, launcher/report 864a8fd28</div>
+      <div><span>Generated</span>2026-06-23 06:24 UTC</div>
+      <div><span>Rows</span>24 complete, 0 missing/incomplete</div>
+    </div>
+  </header>
+  <main>
+    <h2>Readout</h2>
+    <ul>
+      <li><b>AIME25</b>: bf16 at 66.76% (+3.43 pp vs default NVFP4).</li>
+<li><b>GPQA</b>: fp8 at 60.16% (+2.21 pp vs default NVFP4).</li>
+<li><b>LCB</b>: bf16 at 55.29% (+2.42 pp vs default NVFP4).</li>
+    </ul>
+    <p class="note">Delta columns are absolute percentage-point deltas from the
+    corresponding task baseline. CUDA graph evidence is based on server logs
+    containing "Graph capturing finished".</p>
+
+    <h2>Ablation Learnings</h2>
+    <ul>
+      <li>Standalone 4-over-6 vs default NVFP4: AIME25 +1.27 pp, GPQA -0.25 pp, LCB -0.59 pp vs default NVFP4.</li>
+<li>Skip-first-128 vs default NVFP4: AIME25 +0.39 pp, GPQA +0.13 pp, LCB +0.29 pp.</li>
+<li>Skip-last-128 vs default NVFP4: AIME25 +2.45 pp, GPQA +1.07 pp, LCB +0.51 pp.</li>
+<li>Skip-first-128 + 4-over-6 vs default NVFP4: AIME25 +0.59 pp, GPQA +1.14 pp, LCB +0.07 pp.</li>
+<li>Skip-last-128 + 4-over-6 vs default NVFP4: AIME25 +1.47 pp, GPQA +0.00 pp, LCB +0.95 pp.</li>
+<li>CUDA graph evidence was present for 24/24 rows.</li>
+    </ul>
+
+    <h2>Results</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Case</th>
+          <th>Task</th>
+          <th>Score</th>
+          <th>Delta vs default NVFP4</th>
+          <th>Delta vs FP8</th>
+          <th>Stderr</th>
+          <th>Count</th>
+          <th>Runtime s</th>
+          <th>Inference s</th>
+          <th>Avg completion tokens</th>
+          <th>Avg latency ms</th>
+          <th>Finish stop</th>
+          <th>Finish length</th>
+          <th>CUDA graph</th>
+          <th>Slurm jobs</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="case">bf16</td><td>AIME25</td><td class="metric">66.76%</td><td>+3.43 pp</td><td>+1.18 pp</td><td>1.24%</td><td>1,020</td><td>1,532.1</td><td>1,521.7</td><td>17,727.4</td><td>331,754.6</td><td>896</td><td>124</td><td>yes</td><td>462331</td><td>complete</td></tr>
+<tr><td class="case">bf16</td><td>GPQA</td><td class="metric">59.60%</td><td>+1.64 pp</td><td>-0.57 pp</td><td>1.16%</td><td>1,584</td><td>614.5</td><td>605.6</td><td>6,696.4</td><td>80,636.7</td><td>1,582</td><td>2</td><td>yes</td><td>462339</td><td>complete</td></tr>
+<tr><td class="case">bf16</td><td>LCB</td><td class="metric">55.29%</td><td>+2.42 pp</td><td>+0.00 pp</td><td>missing</td><td>1,362</td><td>1,760.1</td><td>1,478.5</td><td>13,799.2</td><td>244,365.7</td><td>1,330</td><td>32</td><td>yes</td><td>462347</td><td>complete</td></tr>
+<tr><td class="case">fp8</td><td>AIME25</td><td class="metric">65.59%</td><td>+2.25 pp</td><td>+0.00 pp</td><td>1.45%</td><td>1,020</td><td>1,054.8</td><td>1,043.8</td><td>18,238.8</td><td>227,482.7</td><td>902</td><td>118</td><td>yes</td><td>462332</td><td>complete</td></tr>
+<tr><td class="case">fp8</td><td>GPQA</td><td class="metric">60.16%</td><td>+2.21 pp</td><td>+0.00 pp</td><td>1.26%</td><td>1,584</td><td>553.9</td><td>544.1</td><td>6,942.7</td><td>69,863.2</td><td>1,580</td><td>4</td><td>yes</td><td>462340</td><td>complete</td></tr>
+<tr><td class="case">fp8</td><td>LCB</td><td class="metric">55.29%</td><td>+2.42 pp</td><td>+0.00 pp</td><td>missing</td><td>1,362</td><td>1,278.0</td><td>1,093.7</td><td>14,513.8</td><td>178,677.8</td><td>1,310</td><td>52</td><td>yes</td><td>462348</td><td>complete</td></tr>
+<tr><td class="case">default nvfp4</td><td>AIME25</td><td class="metric">63.33%</td><td>+0.00 pp</td><td>-2.25 pp</td><td>1.32%</td><td>1,020</td><td>1,027.0</td><td>1,015.0</td><td>18,672.6</td><td>217,478.2</td><td>884</td><td>136</td><td>yes</td><td>462333</td><td>complete</td></tr>
+<tr><td class="case">default nvfp4</td><td>GPQA</td><td class="metric">57.95%</td><td>+0.00 pp</td><td>-2.21 pp</td><td>1.30%</td><td>1,584</td><td>536.0</td><td>528.0</td><td>6,604.5</td><td>72,647.3</td><td>1,579</td><td>5</td><td>yes</td><td>462341</td><td>complete</td></tr>
+<tr><td class="case">default nvfp4</td><td>LCB</td><td class="metric">52.86%</td><td>+0.00 pp</td><td>-2.42 pp</td><td>missing</td><td>1,362</td><td>1,237.3</td><td>1,028.7</td><td>14,574.5</td><td>167,042.1</td><td>1,330</td><td>32</td><td>yes</td><td>462349</td><td>complete</td></tr>
+<tr><td class="case">four over six</td><td>AIME25</td><td class="metric">64.61%</td><td>+1.27 pp</td><td>-0.98 pp</td><td>1.55%</td><td>1,020</td><td>1,025.9</td><td>1,013.6</td><td>18,459.2</td><td>217,386.3</td><td>873</td><td>147</td><td>yes</td><td>462334</td><td>complete</td></tr>
+<tr><td class="case">four over six</td><td>GPQA</td><td class="metric">57.70%</td><td>-0.25 pp</td><td>-2.46 pp</td><td>1.31%</td><td>1,584</td><td>538.9</td><td>527.9</td><td>6,638.6</td><td>69,513.5</td><td>1,579</td><td>5</td><td>yes</td><td>462342</td><td>complete</td></tr>
+<tr><td class="case">four over six</td><td>LCB</td><td class="metric">52.28%</td><td>-0.59 pp</td><td>-3.01 pp</td><td>missing</td><td>1,362</td><td>1,230.8</td><td>1,024.0</td><td>14,471.3</td><td>169,113.4</td><td>1,327</td><td>35</td><td>yes</td><td>462350</td><td>complete</td></tr>
+<tr><td class="case">skip first 128</td><td>AIME25</td><td class="metric">63.73%</td><td>+0.39 pp</td><td>-1.86 pp</td><td>1.14%</td><td>1,020</td><td>1,136.2</td><td>1,119.1</td><td>18,681.5</td><td>241,180.1</td><td>878</td><td>142</td><td>yes</td><td>462335</td><td>complete</td></tr>
+<tr><td class="case">skip first 128</td><td>GPQA</td><td class="metric">58.08%</td><td>+0.13 pp</td><td>-2.08 pp</td><td>1.22%</td><td>1,584</td><td>672.1</td><td>662.1</td><td>6,703.4</td><td>81,624.9</td><td>1,578</td><td>6</td><td>yes</td><td>462343</td><td>complete</td></tr>
+<tr><td class="case">skip first 128</td><td>LCB</td><td class="metric">53.16%</td><td>+0.29 pp</td><td>-2.13 pp</td><td>missing</td><td>1,362</td><td>1,451.9</td><td>1,169.4</td><td>14,573.1</td><td>188,754.1</td><td>1,313</td><td>49</td><td>yes</td><td>462351</td><td>complete</td></tr>
+<tr><td class="case">skip last 128</td><td>AIME25</td><td class="metric">65.78%</td><td>+2.45 pp</td><td>+0.20 pp</td><td>1.49%</td><td>1,020</td><td>1,128.2</td><td>1,118.4</td><td>18,456.0</td><td>238,049.2</td><td>873</td><td>147</td><td>yes</td><td>462336</td><td>complete</td></tr>
+<tr><td class="case">skip last 128</td><td>GPQA</td><td class="metric">59.03%</td><td>+1.07 pp</td><td>-1.14 pp</td><td>1.19%</td><td>1,584</td><td>642.4</td><td>634.2</td><td>6,748.6</td><td>80,793.1</td><td>1,577</td><td>7</td><td>yes</td><td>462344</td><td>complete</td></tr>
+<tr><td class="case">skip last 128</td><td>LCB</td><td class="metric">53.38%</td><td>+0.51 pp</td><td>-1.91 pp</td><td>missing</td><td>1,362</td><td>1,362.9</td><td>1,143.8</td><td>14,289.5</td><td>186,901.9</td><td>1,326</td><td>36</td><td>yes</td><td>462352</td><td>complete</td></tr>
+<tr><td class="case">skip first 128 four over six</td><td>AIME25</td><td class="metric">63.92%</td><td>+0.59 pp</td><td>-1.67 pp</td><td>1.28%</td><td>1,020</td><td>1,155.4</td><td>1,145.5</td><td>18,674.4</td><td>247,269.2</td><td>875</td><td>145</td><td>yes</td><td>462337</td><td>complete</td></tr>
+<tr><td class="case">skip first 128 four over six</td><td>GPQA</td><td class="metric">59.09%</td><td>+1.14 pp</td><td>-1.07 pp</td><td>1.21%</td><td>1,584</td><td>658.8</td><td>646.3</td><td>6,717.0</td><td>82,308.6</td><td>1,581</td><td>3</td><td>yes</td><td>462345</td><td>complete</td></tr>
+<tr><td class="case">skip first 128 four over six</td><td>LCB</td><td class="metric">52.94%</td><td>+0.07 pp</td><td>-2.35 pp</td><td>missing</td><td>1,362</td><td>1,534.4</td><td>1,215.7</td><td>14,875.2</td><td>195,358.7</td><td>1,308</td><td>54</td><td>yes</td><td>462353</td><td>complete</td></tr>
+<tr><td class="case">skip last 128 four over six</td><td>AIME25</td><td class="metric">64.80%</td><td>+1.47 pp</td><td>-0.78 pp</td><td>1.17%</td><td>1,020</td><td>1,127.9</td><td>1,116.6</td><td>18,344.8</td><td>242,406.5</td><td>862</td><td>158</td><td>yes</td><td>462338</td><td>complete</td></tr>
+<tr><td class="case">skip last 128 four over six</td><td>GPQA</td><td class="metric">57.95%</td><td>+0.00 pp</td><td>-2.21 pp</td><td>1.23%</td><td>1,584</td><td>622.5</td><td>613.3</td><td>6,352.0</td><td>85,787.7</td><td>1,583</td><td>1</td><td>yes</td><td>462346</td><td>complete</td></tr>
+<tr><td class="case">skip last 128 four over six</td><td>LCB</td><td class="metric">53.82%</td><td>+0.95 pp</td><td>-1.47 pp</td><td>missing</td><td>1,362</td><td>1,433.7</td><td>1,132.3</td><td>14,288.4</td><td>185,328.3</td><td>1,324</td><td>38</td><td>yes</td><td>462354</td><td>complete</td></tr>
+      </tbody>
+    </table>
+  </main>
+</body>
+</html>
