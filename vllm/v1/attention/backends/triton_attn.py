@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """High-Performance Triton-only Attention layer."""
 
+import math
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -19,7 +20,12 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 from vllm.platforms import current_platform
 from vllm.platforms.interface import DeviceCapability
 from vllm.utils.math_utils import next_power_of_2
-from vllm.utils.torch_utils import is_quantized_kv_cache
+from vllm.utils.torch_utils import (
+    direct_register_custom_op,
+    fp8_k_nvfp4_v_cache_split_views,
+    is_quantized_kv_cache,
+    nvfp4_kv_cache_full_dim,
+)
 from vllm.v1.attention.backend import (
     AttentionBackend,
     AttentionCGSupport,
@@ -54,6 +60,101 @@ logger = init_logger(__name__)
 # constants
 MIN_LAUNCH_GRID_SIZE_2D = 128  # Minimum launch grid size of 2D kernel
 NUM_PAR_SOFTMAX_SEGMENTS = 16  # Number of parallel tiled softmax segments
+FP8_K_NVFP4_V_XQA_WORKSPACE_BYTES = 256 << 20
+FP8_K_NVFP4_V_XQA_SEMAPHORES = 1 << 16
+
+_fp8_k_nvfp4_v_xqa_buffers: dict[torch.device, tuple[torch.Tensor, torch.Tensor]] = {}
+
+
+def _get_fp8_k_nvfp4_v_xqa_buffers(
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    buffers = _fp8_k_nvfp4_v_xqa_buffers.get(device)
+    if buffers is None:
+        buffers = (
+            torch.empty(
+                FP8_K_NVFP4_V_XQA_WORKSPACE_BYTES,
+                dtype=torch.uint8,
+                device=device,
+            ),
+            torch.zeros(
+                FP8_K_NVFP4_V_XQA_SEMAPHORES,
+                dtype=torch.uint32,
+                device=device,
+            ),
+        )
+        _fp8_k_nvfp4_v_xqa_buffers[device] = buffers
+    return buffers
+
+
+def _fp8_k_nvfp4_v_native_decode(
+    out: torch.Tensor,
+    query: torch.Tensor,
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    value_scale_cache: torch.Tensor,
+    block_tables: torch.Tensor,
+    seq_lens: torch.Tensor,
+    k_scale: torch.Tensor,
+    v_scale: torch.Tensor,
+    attention_sinks: torch.Tensor | None,
+    workspace_buffer: torch.Tensor,
+    semaphores: torch.Tensor,
+    num_kv_heads: int,
+    sliding_window_size: int,
+    sm_count: int,
+) -> None:
+    from flashinfer.xqa import xqa
+
+    xqa(
+        query.unsqueeze(1),
+        key_cache,
+        value_cache,
+        block_tables,
+        seq_lens.view(torch.uint32).unsqueeze(1),
+        out.unsqueeze(1),
+        workspace_buffer,
+        semaphores,
+        num_kv_heads,
+        value_cache.shape[1],
+        sinks=(
+            None if attention_sinks is None else attention_sinks.view(num_kv_heads, -1)
+        ),
+        k_scale=k_scale,
+        v_scale=v_scale,
+        sliding_win_size=sliding_window_size,
+        sm_count=sm_count,
+        enable_pdl=False,
+        v_sf_cache=value_scale_cache,
+    )
+
+
+def _fp8_k_nvfp4_v_native_decode_fake(
+    out: torch.Tensor,
+    query: torch.Tensor,
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    value_scale_cache: torch.Tensor,
+    block_tables: torch.Tensor,
+    seq_lens: torch.Tensor,
+    k_scale: torch.Tensor,
+    v_scale: torch.Tensor,
+    attention_sinks: torch.Tensor | None,
+    workspace_buffer: torch.Tensor,
+    semaphores: torch.Tensor,
+    num_kv_heads: int,
+    sliding_window_size: int,
+    sm_count: int,
+) -> None:
+    return
+
+
+direct_register_custom_op(
+    op_name="fp8_k_nvfp4_v_native_decode",
+    op_func=_fp8_k_nvfp4_v_native_decode,
+    mutates_args=["out", "workspace_buffer", "semaphores"],
+    fake_impl=_fp8_k_nvfp4_v_native_decode_fake,
+)
 
 
 @dataclass
@@ -263,6 +364,7 @@ class TritonAttentionBackend(AttentionBackend):
         "int4_per_token_head",
         "int8_per_token_head",
         "fp8_per_token_head",
+        "fp8_k_nvfp4_v",
     ]
 
     @staticmethod
@@ -303,6 +405,9 @@ class TritonAttentionBackend(AttentionBackend):
     ) -> tuple[int, ...]:
         if block_size % 16 != 0:
             raise ValueError("Block size must be a multiple of 16.")
+        if cache_dtype_str == "fp8_k_nvfp4_v":
+            last_dim = head_size + nvfp4_kv_cache_full_dim(head_size)
+            return (num_blocks, 1, block_size, num_kv_heads, last_dim)
         if kv_cache_uses_per_token_head_scales(cache_dtype_str):
             # Pad the head dim by sizeof(float32)/sizeof(cache_dtype) so the
             # per-(token, head) scale fits inline after the quantized data;
@@ -382,6 +487,29 @@ class TritonAttentionBackend(AttentionBackend):
     def supports_compute_capability(cls, capability: DeviceCapability) -> bool:
         return True
 
+    @classmethod
+    def supports_combination(
+        cls,
+        head_size: int,
+        dtype: torch.dtype,
+        kv_cache_dtype: CacheDType | None,
+        block_size: int | None,
+        use_mla: bool,
+        has_sink: bool,
+        use_sparse: bool,
+        use_mm_prefix: bool,
+        device_capability: DeviceCapability,
+    ) -> str | None:
+        if kv_cache_dtype != "fp8_k_nvfp4_v":
+            return None
+        if device_capability.major != 10:
+            return "fp8_k_nvfp4_v requires an SM100-family GPU"
+        if dtype not in (torch.float16, torch.bfloat16):
+            return "fp8_k_nvfp4_v requires float16 or bfloat16 inputs"
+        if head_size % 64 != 0:
+            return "fp8_k_nvfp4_v requires head_size divisible by 64"
+        return None
+
 
 class TritonAttentionImpl(AttentionImpl):
     # Per-token-head quant: scale views carved from inline head padding.
@@ -439,6 +567,26 @@ class TritonAttentionImpl(AttentionImpl):
             storage_offset=v_base_f32 + scale_off_f32,
         )
         self._v_scale_cache.fill_(1.0)
+
+    def _mixed_kv_cache_views(
+        self, kv_cache: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self._mixed_k_cache is None:
+            self._mixed_packed_cache = kv_cache[:, 0]
+            (
+                self._mixed_k_cache,
+                self._mixed_v_cache,
+                self._mixed_v_scale_cache,
+            ) = fp8_k_nvfp4_v_cache_split_views(
+                self._mixed_packed_cache, self.head_size
+            )
+        assert self._mixed_v_cache is not None
+        assert self._mixed_v_scale_cache is not None
+        return (
+            self._mixed_k_cache,
+            self._mixed_v_cache,
+            self._mixed_v_scale_cache,
+        )
 
     def fused_output_quant_supported(self, quant_key: QuantKey):
         return quant_key == kFp8StaticTensorSym
@@ -520,6 +668,43 @@ class TritonAttentionImpl(AttentionImpl):
 
         self._kv_quant_mode = get_kv_quant_mode(kv_cache_dtype)
         self._is_per_token_head_quant = self._kv_quant_mode.is_per_token_head
+        self._is_fp8_k_nvfp4_v = self._kv_quant_mode == KVQuantMode.FP8_K_NVFP4_V
+        self._mixed_packed_cache: torch.Tensor | None = None
+        self._mixed_k_cache: torch.Tensor | None = None
+        self._mixed_v_cache: torch.Tensor | None = None
+        self._mixed_v_scale_cache: torch.Tensor | None = None
+        if self._is_fp8_k_nvfp4_v and not (
+            current_platform.is_device_capability_family(100)
+        ):
+            raise ValueError("fp8_k_nvfp4_v requires an SM100-family GPU")
+        self._use_native_mixed_xqa = (
+            self._is_fp8_k_nvfp4_v
+            and self.attn_type == AttentionType.DECODER
+            and self.head_size == 128
+            and self.num_queries_per_kv in (1, 2, 4, 8, 16)
+            and self.alibi_slopes is None
+            and not self.use_alibi_sqrt
+            and self.logits_soft_cap == 0
+            and self.chunk_lookback < 0
+            and math.isclose(
+                self.scale,
+                self.head_size**-0.5,
+                rel_tol=0,
+                abs_tol=1e-8,
+            )
+        )
+        self._mixed_xqa_workspace: torch.Tensor | None = None
+        self._mixed_xqa_semaphores: torch.Tensor | None = None
+        self._mixed_xqa_sm_count = 0
+        if self._use_native_mixed_xqa:
+            self.supports_quant_query_input = False
+            device = torch.device("cuda", torch.cuda.current_device())
+            self._mixed_xqa_workspace, self._mixed_xqa_semaphores = (
+                _get_fp8_k_nvfp4_v_xqa_buffers(device)
+            )
+            self._mixed_xqa_sm_count = torch.cuda.get_device_properties(
+                device
+            ).multi_processor_count
 
         # Enable tensor descriptors for Q/K/V load/store on platforms that
         # benefit from HW 2D block reads (Intel Xe2/Xe3).  The dead branch
@@ -596,10 +781,55 @@ class TritonAttentionImpl(AttentionImpl):
                 layer,
             )
 
+        nvfp4_v_scale_cache = None
+        if self._is_fp8_k_nvfp4_v:
+            key_cache, value_cache, nvfp4_v_scale_cache = self._mixed_kv_cache_views(
+                kv_cache
+            )
+            use_native_decode = (
+                self._use_native_mixed_xqa
+                and attn_metadata.max_query_len == 1
+                and num_actual_tokens == attn_metadata.seq_lens.shape[0]
+                and query.dtype in (torch.float16, torch.bfloat16)
+                and output_scale is None
+                and attn_metadata.causal is True
+                and attn_metadata.mm_prefix_range_tensor is None
+                and value_cache.shape[1] in (16, 32, 64, 128)
+            )
+            if use_native_decode:
+                assert self._mixed_xqa_workspace is not None
+                assert self._mixed_xqa_semaphores is not None
+                torch.ops.vllm.fp8_k_nvfp4_v_native_decode(
+                    output[:num_actual_tokens],
+                    query[:num_actual_tokens],
+                    key_cache,
+                    value_cache,
+                    nvfp4_v_scale_cache,
+                    attn_metadata.block_table,
+                    attn_metadata.seq_lens,
+                    layer._k_scale,
+                    layer._v_scale,
+                    self.sinks,
+                    self._mixed_xqa_workspace,
+                    self._mixed_xqa_semaphores,
+                    self.num_kv_heads,
+                    (0 if self.sliding_window[0] < 0 else self.sliding_window[0] + 1),
+                    self._mixed_xqa_sm_count,
+                )
+                return output
+            descale_shape = (
+                attn_metadata.query_start_loc.shape[0] - 1,
+                key_cache.shape[2],
+            )
+            q_descale = layer._q_scale if query.dtype == self.fp8_dtype else None
+            k_descale = layer._k_scale.expand(descale_shape)
+            v_descale = layer._v_scale.expand(descale_shape)
+            k_scale_cache = None
+            v_scale_cache = None
         # Per-token-head quantized KV cache: handled by the core unified
         # kernel, which dequantizes per-(token, head) inline via constexpr
         # branches (INT8 / FP8) and dispatches to the packed INT4 kernel.
-        if self._is_per_token_head_quant:
+        elif self._is_per_token_head_quant:
             key_cache, value_cache = self._pth_key_value_caches(kv_cache)
             k_scale_cache = self._k_scale_cache
             v_scale_cache = self._v_scale_cache
@@ -674,6 +904,7 @@ class TritonAttentionImpl(AttentionImpl):
             kv_quant_mode=self._kv_quant_mode,
             k_scale_cache=k_scale_cache,
             v_scale_cache=v_scale_cache,
+            nvfp4_v_scale_cache=nvfp4_v_scale_cache,
             chunk_lookback=self.chunk_lookback,
             use_td=self.use_td,
         )
@@ -748,6 +979,20 @@ class TritonAttentionImpl(AttentionImpl):
         if self.attn_type in (AttentionType.ENCODER_ONLY, AttentionType.ENCODER):
             # For encoder attention,
             # we use direct Q, K, V tensors without caching
+            return
+        if self._is_fp8_k_nvfp4_v:
+            self._mixed_kv_cache_views(kv_cache)
+            assert self._mixed_packed_cache is not None
+            torch.ops._C_cache_ops.reshape_and_cache_flash(
+                key,
+                value,
+                self._mixed_packed_cache,
+                self._mixed_packed_cache,
+                slot_mapping,
+                "fp8_k_nvfp4_v",
+                layer._k_scale,
+                layer._v_scale,
+            )
             return
         # Reshape the input keys and values and store them in the cache.
         if self._is_per_token_head_quant:

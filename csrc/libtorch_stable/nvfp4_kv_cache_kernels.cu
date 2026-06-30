@@ -18,7 +18,10 @@
 #include "libtorch_stable/quantization/fp4/nvfp4_utils.cuh"
 
 #include "libtorch_stable/dispatch_utils.h"
+#include "../quantization/w8a8/fp8/nvidia/quant_utils.cuh"
 #include "libtorch_stable/torch_utils.h"
+
+#include <string>
 
 namespace vllm {
 
@@ -175,41 +178,148 @@ __global__ void reshape_and_cache_nvfp4_kernel(
   }
 }
 
+template <typename scalar_t>
+__global__ void reshape_and_cache_fp8_k_nvfp4_v_kernel(
+    const scalar_t* __restrict__ key,    // [num_tokens, num_heads, head_size]
+    const scalar_t* __restrict__ value,  // [num_tokens, num_heads, head_size]
+    uint8_t* __restrict__ key_cache,     // FP8 K region
+    uint8_t* __restrict__ value_data_cache,   // NVFP4 V data region
+    uint8_t* __restrict__ value_scale_cache,  // NVFP4 V scale region
+    const int64_t* __restrict__ slot_mapping,
+    const float* __restrict__ k_scale_ptr,
+    const float* __restrict__ v_scale_ptr, const int64_t key_stride,
+    const int64_t value_stride, const int num_heads, const int head_size,
+    const int block_size, const int64_t key_block_stride,
+    const int64_t key_head_stride, const int64_t key_block_offset_stride,
+    const int64_t data_block_stride, const int64_t data_head_stride,
+    const int64_t data_block_offset_stride, const int64_t scale_block_stride,
+    const int64_t scale_head_stride, const int64_t scale_block_offset_stride) {
+  using CudaType = typename CUDATypeConverter<scalar_t>::Type;
+  using PVec = PackedVec<CudaType, CVT_FP4_PACK16>;
+
+  static constexpr int ELTS = CVT_FP4_ELTS_PER_THREAD;
+  static constexpr int THREADS_PER_SF = CVT_FP4_SF_VEC_SIZE / ELTS;
+
+  const int64_t token_idx = blockIdx.x;
+  const int64_t slot_idx = slot_mapping[token_idx];
+  if (slot_idx < 0) return;
+
+  const int64_t block_idx = slot_idx / block_size;
+  const int block_offset = static_cast<int>(slot_idx % block_size);
+  const int tid = threadIdx.x;
+
+  const CudaType* __restrict__ key_src =
+      reinterpret_cast<const CudaType*>(key) + token_idx * key_stride;
+  uint8_t* __restrict__ key_block = key_cache + block_idx * key_block_stride;
+  const float k_scale = *k_scale_ptr;
+  const int n_key_elems = num_heads * head_size;
+  for (int i = tid; i < n_key_elems; i += blockDim.x) {
+    const int head = i / head_size;
+    const int dim = i - head * head_size;
+    uint8_t* __restrict__ dst = key_block + head * key_head_stride +
+                                block_offset * key_block_offset_stride + dim;
+    *dst = fp8::scaled_convert<uint8_t, CudaType, Fp8KVCacheDataType::kFp8E4M3>(
+        key_src[i], k_scale);
+  }
+
+  const int groups_per_head = head_size / CVT_FP4_SF_VEC_SIZE;
+  const int total_groups = num_heads * groups_per_head;
+  const int num_thread_groups = blockDim.x / THREADS_PER_SF;
+  const int tg_id = tid / THREADS_PER_SF;
+  const int tg_lane = tid % THREADS_PER_SF;
+  const float global_scale = 1.0f / *v_scale_ptr;
+
+  const CudaType* __restrict__ value_token =
+      reinterpret_cast<const CudaType*>(value) + token_idx * value_stride;
+  uint8_t* __restrict__ data_block =
+      value_data_cache + block_idx * data_block_stride;
+  uint8_t* __restrict__ scale_block =
+      value_scale_cache + block_idx * scale_block_stride;
+
+  for (int g = tg_id; g < total_groups; g += num_thread_groups) {
+    const int head = g / groups_per_head;
+    const int group_in_head = g % groups_per_head;
+
+    PVec in_vec;
+    const CudaType* __restrict__ src_ptr = value_token + head * head_size +
+                                           group_in_head * CVT_FP4_SF_VEC_SIZE +
+                                           tg_lane * ELTS;
+
+#pragma unroll
+    for (int i = 0; i < ELTS / 2; i++) {
+      in_vec.elts[i] =
+          reinterpret_cast<const typename PackedTypeConverter<CudaType>::Type*>(
+              src_ptr)[i];
+    }
+
+    uint8_t sf_val;
+    uint8_t* sf_out_ptr = (tg_lane == 0) ? &sf_val : nullptr;
+    fp4_packed_t packed = cvt_warp_fp16_to_fp4<CudaType, THREADS_PER_SF>(
+        in_vec, global_scale, sf_out_ptr);
+
+    uint8_t* __restrict__ data_dst = data_block + head * data_head_stride +
+                                     block_offset * data_block_offset_stride;
+
+#if CVT_FP4_PACK16
+    int data_byte_offset = group_in_head * 8;
+    reinterpret_cast<uint64_t*>(data_dst + data_byte_offset)[0] =
+        (uint64_t(packed.hi) << 32) | uint64_t(packed.lo);
+#else
+    int data_byte_offset =
+        group_in_head * CVT_FP4_SF_VEC_SIZE / 2 + tg_lane * ELTS / 2;
+    reinterpret_cast<uint32_t*>(data_dst + data_byte_offset)[0] = packed;
+#endif
+
+    if (sf_out_ptr != nullptr) {
+      uint8_t* __restrict__ scale_dst =
+          scale_block + head * scale_head_stride +
+          block_offset * scale_block_offset_stride + group_in_head;
+      *scale_dst = sf_val;
+    }
+  }
+}
+
 }  // namespace vllm
 
-// Non-template entry point callable from cache_kernels.cu.
-// Receives key_cache/value_cache as kv_cache[:, 0] and kv_cache[:, 1].
-// Each KV side contains both data and scale:
-//   page = [K_data | K_scale | V_data | V_scale]
-void reshape_and_cache_nvfp4_dispatch(torch::stable::Tensor& key,
-                                      torch::stable::Tensor& value,
-                                      torch::stable::Tensor& key_cache,
-                                      torch::stable::Tensor& value_cache,
-                                      torch::stable::Tensor& slot_mapping,
-                                      torch::stable::Tensor& k_scale,
-                                      torch::stable::Tensor& v_scale) {
+// Non-template entry point callable from cache_kernels.cu. Symmetric NVFP4
+// receives separate K/V sides; mixed KV receives one complete packed page.
+void reshape_and_cache_nvfp4_dispatch(
+    torch::stable::Tensor& key, torch::stable::Tensor& value,
+    torch::stable::Tensor& key_cache, torch::stable::Tensor& value_cache,
+    torch::stable::Tensor& slot_mapping, torch::stable::Tensor& k_scale,
+    torch::stable::Tensor& v_scale, const std::string& kv_cache_dtype) {
   int num_tokens = slot_mapping.size(0);
   int num_heads = key.size(1);
   int head_size = key.size(2);
   int data_dim = head_size / 2;
   int scale_dim = head_size / 16;
-  int full_dim = data_dim + scale_dim;
+  bool is_fp8_k_nvfp4_v = kv_cache_dtype == "fp8_k_nvfp4_v";
+  int full_dim = is_fp8_k_nvfp4_v ? head_size + data_dim + scale_dim
+                                  : data_dim + scale_dim;
 
-  // key_cache is kv_cache[:, 0] with shape
-  // [num_blocks, block_size, num_heads, full_dim] in logical order.
+  // key_cache has shape [num_blocks, block_size, num_heads, full_dim] in
+  // logical order. For the mixed format, it owns the complete packed page.
   // Strides encode the physical layout (HND or NHD).
   STD_TORCH_CHECK(key_cache.dim() == 4, "key_cache must be 4D");
   STD_TORCH_CHECK(key_cache.size(3) == full_dim,
-                  "key_cache last dim must be data_dim + scale_dim, got ",
-                  key_cache.size(3), " expected ", full_dim);
+                  "key_cache last dim is invalid for ", kv_cache_dtype,
+                  ", got ", key_cache.size(3), " expected ", full_dim);
 
   int block_size = key_cache.size(1);
 
-  STD_TORCH_CHECK(head_size % 16 == 0,
-                  "head_size must be divisible by 16 for NVFP4 KV cache");
-  STD_TORCH_CHECK(block_size % 4 == 0,
-                  "block_size must be divisible by 4 for NVFP4 KV cache "
-                  "swizzle");
+  if (is_fp8_k_nvfp4_v) {
+    STD_TORCH_CHECK(
+        head_size % 64 == 0,
+        "head_size must be divisible by 64 for FP8-K/NVFP4-V KV cache");
+    STD_TORCH_CHECK(k_scale.numel() == 1 && v_scale.numel() == 1,
+                    "FP8-K/NVFP4-V KV cache requires per-tensor scales");
+  } else {
+    STD_TORCH_CHECK(head_size % 16 == 0,
+                    "head_size must be divisible by 16 for NVFP4 KV cache");
+    STD_TORCH_CHECK(block_size % 4 == 0,
+                    "block_size must be divisible by 4 for NVFP4 KV cache "
+                    "swizzle");
+  }
 
   // Detect physical layout from strides (based on full_dim).
   // HND: head stride > block_offset stride.
@@ -262,16 +372,52 @@ void reshape_and_cache_nvfp4_dispatch(torch::stable::Tensor& key,
 
   VLLM_STABLE_DISPATCH_HALF_TYPES(
       key.scalar_type(), "reshape_and_cache_nvfp4", [&] {
-        vllm::reshape_and_cache_nvfp4_kernel<scalar_t>
-            <<<grid, block, 0, stream>>>(
-                key.const_data_ptr<scalar_t>(),
-                value.const_data_ptr<scalar_t>(),
-                key_cache.mutable_data_ptr<uint8_t>(),
-                value_cache.mutable_data_ptr<uint8_t>(), key_scale_ptr,
-                value_scale_ptr, slot_mapping.const_data_ptr<int64_t>(),
-                k_scale_ptr, v_scale_ptr, key.stride(0), value.stride(0),
-                num_heads, head_size, block_size, data_block_stride,
-                data_head_stride, data_block_offset_stride, scale_block_stride,
-                scale_head_stride, scale_block_offset_stride);
+        if (is_fp8_k_nvfp4_v) {
+          int64_t key_block_stride = key_cache.stride(0);
+          int64_t key_head_stride, key_block_offset_stride;
+          if (is_hnd) {
+            key_head_stride = (int64_t)block_size * head_size;
+            key_block_offset_stride = head_size;
+          } else {
+            key_head_stride = head_size;
+            key_block_offset_stride = (int64_t)num_heads * head_size;
+          }
+          int64_t key_data_per_page =
+              (int64_t)num_heads * block_size * head_size;
+          int64_t value_data_per_page =
+              (int64_t)num_heads * block_size * data_dim;
+          uint8_t* value_data_ptr =
+              key_cache.mutable_data_ptr<uint8_t>() + key_data_per_page;
+          uint8_t* mixed_value_scale_ptr = value_data_ptr + value_data_per_page;
+          int fp8_k_threads = std::min(num_heads * head_size, 512);
+          num_threads = std::min(
+              std::max(total_groups * THREADS_PER_SF, fp8_k_threads), 512);
+          num_threads = ((num_threads + 31) / 32) * 32;
+          vllm::reshape_and_cache_fp8_k_nvfp4_v_kernel<scalar_t>
+              <<<grid, dim3(num_threads), 0, stream>>>(
+                  key.const_data_ptr<scalar_t>(),
+                  value.const_data_ptr<scalar_t>(),
+                  key_cache.mutable_data_ptr<uint8_t>(), value_data_ptr,
+                  mixed_value_scale_ptr, slot_mapping.const_data_ptr<int64_t>(),
+                  k_scale_ptr, v_scale_ptr, key.stride(0), value.stride(0),
+                  num_heads, head_size, block_size, key_block_stride,
+                  key_head_stride, key_block_offset_stride, data_block_stride,
+                  data_head_stride, data_block_offset_stride,
+                  scale_block_stride, scale_head_stride,
+                  scale_block_offset_stride);
+        } else {
+          vllm::reshape_and_cache_nvfp4_kernel<scalar_t>
+              <<<grid, block, 0, stream>>>(
+                  key.const_data_ptr<scalar_t>(),
+                  value.const_data_ptr<scalar_t>(),
+                  key_cache.mutable_data_ptr<uint8_t>(),
+                  value_cache.mutable_data_ptr<uint8_t>(), key_scale_ptr,
+                  value_scale_ptr, slot_mapping.const_data_ptr<int64_t>(),
+                  k_scale_ptr, v_scale_ptr, key.stride(0), value.stride(0),
+                  num_heads, head_size, block_size, data_block_stride,
+                  data_head_stride, data_block_offset_stride,
+                  scale_block_stride, scale_head_stride,
+                  scale_block_offset_stride);
+        }
       });
 }

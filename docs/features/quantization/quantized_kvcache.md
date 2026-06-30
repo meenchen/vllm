@@ -49,6 +49,17 @@ You can configure how the quantization scales are computed in vLLM using three d
 - `kv_cache_dtype="fp8_e4m3"`: Supported on CUDA 11.8+ and ROCm (AMD GPUs)
 - `kv_cache_dtype="fp8_e5m2"`: Supported on CUDA 11.8+
 
+### FP8-K/NVFP4-V KV Cache
+
+On SM100-family GPUs, `kv_cache_dtype="fp8_k_nvfp4_v"` stores keys in FP8
+E4M3 and values in NVFP4 E2M1. Each group of 16 value elements has an FP8
+scale. For a head dimension of 128, this uses 200 bytes per KV head and token,
+compared with 256 bytes for FP8 K and V.
+
+The native XQA decode path supports head dimension 128 and the default
+attention scale. Other supported requests use the Triton attention fallback.
+Key and value head dimensions must match.
+
 ---
 
 ## Examples

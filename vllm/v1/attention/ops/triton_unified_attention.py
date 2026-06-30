@@ -44,15 +44,36 @@ def _cast_kv_tile(data, Q, tensor_scale, KV_QUANT_MODE: tl.constexpr):
     - ``KV_QUANT_MODE == 0`` (NONE) and ``2`` (INT8 per-token-head) and
       ``3`` (FP8 per-token-head): plain cast.  Per-token-head modes apply
       their scales separately on S/P inside the loop.
-    - ``KV_QUANT_MODE == 1`` (FP8 per-tensor): dequantize using the
+    - ``KV_QUANT_MODE in {1, 6}`` (FP8 per-tensor K): dequantize using the
       tensor-wide scale, unless Q is also FP8 and the caller folds the scales
-      into the attention score and output accumulator.
+      into the attention score.
     """
-    if KV_QUANT_MODE == 1:
+    if KV_QUANT_MODE == 1 or KV_QUANT_MODE == 6:
         if Q.dtype.is_fp8():
             return data.to(Q.dtype)
         return (data.to(tl.float32) * tl.load(tensor_scale)).to(Q.dtype)
     return data.to(Q.dtype)
+
+
+@triton.jit
+def _unpack_fp4_e2m1(raw):
+    packed_fp16 = tl.inline_asm_elementwise(
+        """
+        {
+            .reg .b8 fp4_byte;
+            mov.b32 {fp4_byte, _, _, _}, $1;
+            cvt.rn.f16x2.e2m1x2 $0, fp4_byte;
+        }
+        """,
+        constraints="=r,r",
+        args=[raw],
+        dtype=tl.uint32,
+        is_pure=True,
+        pack=1,
+    )
+    low = tl.cast((packed_fp16 & 0xFFFF).to(tl.uint16), tl.float16, bitcast=True)
+    high = tl.cast((packed_fp16 >> 16).to(tl.uint16), tl.float16, bitcast=True)
+    return tl.interleave(low, high)
 
 
 # ---------------------------------------------------------------------------
@@ -257,10 +278,16 @@ def kernel_unified_attention(
     stride_vs_blk: tl.int64 = None,
     stride_vs_slot: tl.int64 = None,
     stride_vs_head: tl.int64 = None,
+    # Linear NVFP4 V block scales, used iff KV_QUANT_MODE == 6.
+    nvfp4_v_scale_cache_ptr=None,
+    stride_nvfp4_vs_blk: tl.int64 = None,
+    stride_nvfp4_vs_slot: tl.int64 = None,
+    stride_nvfp4_vs_head: tl.int64 = None,
+    stride_nvfp4_vs_dim: tl.constexpr = None,
     # KV cache quantization mode handled inside this kernel via constexpr
     # branches: NONE (0), FP8_PER_TENSOR (1), INT8_PER_TOKEN_HEAD (2),
     # FP8_PER_TOKEN_HEAD (3). Sub-byte INT4 (4) uses its own
-    # int4_per_token_head kernel, not this one.
+    # int4_per_token_head kernel, not this one. FP8_K_NVFP4_V is mode 6.
     KV_QUANT_MODE: tl.constexpr = 0,
     FP8_MIN: tl.constexpr = float8_info.min,
     FP8_MAX: tl.constexpr = float8_info.max,
@@ -276,8 +303,10 @@ def kernel_unified_attention(
     USE_TD_QO: tl.constexpr = False,
     Q_IS_FP8: tl.constexpr = False,
 ):
-    USE_PER_TOKEN_HEAD_SCALES: tl.constexpr = KV_QUANT_MODE >= 2
-    USE_FP8_Q_DESCALE: tl.constexpr = KV_QUANT_MODE == 1 and Q_IS_FP8
+    USE_PER_TOKEN_HEAD_SCALES: tl.constexpr = KV_QUANT_MODE == 2 or KV_QUANT_MODE == 3
+    USE_MIXED_KV: tl.constexpr = KV_QUANT_MODE == 6
+    USE_FP8_Q_DESCALE: tl.constexpr = (KV_QUANT_MODE == 1 or USE_MIXED_KV) and Q_IS_FP8
+    USE_ACC_VALUE_SCALE: tl.constexpr = USE_FP8_Q_DESCALE or USE_MIXED_KV
 
     if USE_TD:
         tl.static_assert(
@@ -367,6 +396,7 @@ def kernel_unified_attention(
     value_scale = 1.0
     if USE_FP8_Q_DESCALE:
         score_scale = scale * tl.load(q_scale) * tl.load(k_scale)
+    if USE_ACC_VALUE_SCALE:
         value_scale = tl.load(v_scale)
 
     context_len = seq_len - cur_batch_query_len
@@ -448,12 +478,6 @@ def kernel_unified_attention(
                 HEAD_SIZE_PADDED,
             )
         else:
-            v_offset = (
-                physical_block_idx[:, None] * stride_v_cache_0
-                + kv_head_idx * stride_v_cache_2
-                + offs_d[None, :] * stride_v_cache_3
-                + (seq_offset % BLOCK_SIZE)[:, None] * stride_v_cache_1
-            )
             k_offset = (
                 physical_block_idx[None, :] * stride_k_cache_0
                 + kv_head_idx * stride_k_cache_2
@@ -466,14 +490,66 @@ def kernel_unified_attention(
                 mask=dim_mask[:, None] & tile_mask[None, :],
                 other=0.0,
             )
-            # V : (TILE_SIZE, HEAD_SIZE)
-            V_load = tl.load(
-                value_cache_ptr + v_offset,
-                mask=dim_mask[None, :] & tile_mask[:, None],
-                other=0.0,
-            )
+            if USE_MIXED_KV:
+                # Two E2M1 values share one byte. Scales are linear in
+                # [page, token, head, 16-element group] order.
+                token_in_block = seq_offset % BLOCK_SIZE
+                offs_vd = tl.arange(0, HEAD_SIZE_PADDED // 2)
+                v_offset = (
+                    physical_block_idx[:, None] * stride_v_cache_0
+                    + token_in_block[:, None] * stride_v_cache_1
+                    + kv_head_idx * stride_v_cache_2
+                    + offs_vd[None, :] * stride_v_cache_3
+                )
+                raw = tl.load(
+                    value_cache_ptr + v_offset,
+                    mask=(offs_vd[None, :] < HEAD_SIZE // 2) & tile_mask[:, None],
+                    other=0,
+                )
+                value = _unpack_fp4_e2m1(raw)
+
+                scale_dim: tl.constexpr = HEAD_SIZE // 16
+                scale_idx = tl.arange(0, HEAD_SIZE_PADDED // 16)
+                scale_offset = (
+                    physical_block_idx[:, None] * stride_nvfp4_vs_blk
+                    + token_in_block[:, None] * stride_nvfp4_vs_slot
+                    + kv_head_idx * stride_nvfp4_vs_head
+                    + scale_idx[None, :] * stride_nvfp4_vs_dim
+                )
+                raw_scale = tl.load(
+                    nvfp4_v_scale_cache_ptr + scale_offset,
+                    mask=(scale_idx[None, :] < scale_dim) & tile_mask[:, None],
+                    other=0,
+                )
+                block_scale = tl.cast(raw_scale, tl.float8e4nv, bitcast=True).to(
+                    tl.float32
+                )
+                block_scale = tl.interleave(block_scale, block_scale)
+                block_scale = tl.interleave(block_scale, block_scale)
+                block_scale = tl.interleave(block_scale, block_scale)
+                block_scale = tl.interleave(block_scale, block_scale)
+                V_load = value * block_scale
+            else:
+                v_offset = (
+                    physical_block_idx[:, None] * stride_v_cache_0
+                    + kv_head_idx * stride_v_cache_2
+                    + offs_d[None, :] * stride_v_cache_3
+                    + (seq_offset % BLOCK_SIZE)[:, None] * stride_v_cache_1
+                )
+                # V : (TILE_SIZE, HEAD_SIZE)
+                V_load = tl.load(
+                    value_cache_ptr + v_offset,
+                    mask=dim_mask[None, :] & tile_mask[:, None],
+                    other=0.0,
+                )
         K = _cast_kv_tile(K_load, Q, k_scale, KV_QUANT_MODE)
-        V = _cast_kv_tile(V_load, Q, v_scale, KV_QUANT_MODE)
+        if USE_MIXED_KV:
+            # Reconstructed V is still globally normalized; keep it in FP8
+            # for the P x V tensor-core dot and apply v_scale to the FP32
+            # accumulator below.
+            V = V_load.to(Q.dtype)
+        else:
+            V = _cast_kv_tile(V_load, Q, v_scale, KV_QUANT_MODE)
 
         # Per-(token, head) scales for INT8 / FP8 per-token-head modes.
         if USE_PER_TOKEN_HEAD_SCALES:
@@ -564,7 +640,7 @@ def kernel_unified_attention(
 
     # ---- Epilogue ---------------------------------------------------------
     if IS_3D:
-        if USE_FP8_Q_DESCALE:
+        if USE_ACC_VALUE_SCALE:
             acc *= value_scale
         # Store per-segment partials; finalized by ``reduce_segments``.
         if USE_TD_QO:
@@ -621,7 +697,7 @@ def kernel_unified_attention(
         )
     else:
         acc = acc / L[:, None]
-        if USE_FP8_Q_DESCALE:
+        if USE_ACC_VALUE_SCALE:
             acc *= value_scale
         if USE_FP8:
             acc = acc * tl.load(out_scale)
@@ -812,6 +888,7 @@ def unified_attention(
     kv_quant_mode: KVQuantMode = KVQuantMode.NONE,
     k_scale_cache=None,  # [num_blocks, block_size, num_kv_heads] float32
     v_scale_cache=None,  # [num_blocks, block_size, num_kv_heads] float32
+    nvfp4_v_scale_cache=None,  # [num_blocks, block_size, num_kv_heads, D/16]
     # Chunked attention: restrict attention to aligned blocks with lookback.
     chunk_lookback=-1,
     # Tensor-descriptor mode: use ``tl.make_tensor_descriptor`` for Q/K/V
@@ -877,6 +954,13 @@ def unified_attention(
         assert k_scale_cache is not None and v_scale_cache is not None, (
             f"{kv_quant_mode.name} requires k_scale_cache / v_scale_cache"
         )
+    use_mixed_kv = kv_quant_mode == KVQuantMode.FP8_K_NVFP4_V
+    if use_mixed_kv:
+        assert nvfp4_v_scale_cache is not None, (
+            "FP8_K_NVFP4_V requires its NVFP4 V scale cache"
+        )
+        assert not use_td, "FP8_K_NVFP4_V does not support tensor descriptors"
+        assert q.shape[2] % 64 == 0
 
     use_mm_prefix = False
     max_mm_ranges = 0
@@ -1037,6 +1121,16 @@ def unified_attention(
         # Pass the K cache as a stand-in pointer; never dereferenced.
         k_scale_ptr = k
         v_scale_ptr = v
+    if use_mixed_kv:
+        nvfp4_vs_strides = nvfp4_v_scale_cache.stride()
+        nvfp4_vs_blk = nvfp4_vs_strides[0]
+        nvfp4_vs_slot = nvfp4_vs_strides[1]
+        nvfp4_vs_head = nvfp4_vs_strides[2]
+        nvfp4_vs_dim = nvfp4_vs_strides[3]
+        nvfp4_v_scale_ptr = nvfp4_v_scale_cache.view(torch.uint8)
+    else:
+        nvfp4_vs_blk = nvfp4_vs_slot = nvfp4_vs_head = nvfp4_vs_dim = 0
+        nvfp4_v_scale_ptr = v
     # 3D needs real segm tensors; 2D never touches them but Triton wants
     # a non-null pointer.  Reuse ``out`` as the placeholder.
     segm_output_ptr = softmax_segm_output if use_3d else out
@@ -1073,6 +1167,7 @@ def unified_attention(
         qq_bias_ptr=qq_bias,
         k_scale_cache_ptr=k_scale_ptr,
         v_scale_cache_ptr=v_scale_ptr,
+        nvfp4_v_scale_cache_ptr=nvfp4_v_scale_ptr,
         scale=softmax_scale,
         q_scale=q_descale,
         k_scale=k_descale,
@@ -1117,6 +1212,10 @@ def unified_attention(
         stride_vs_blk=vs_blk,
         stride_vs_slot=vs_slot,
         stride_vs_head=vs_head,
+        stride_nvfp4_vs_blk=nvfp4_vs_blk,
+        stride_nvfp4_vs_slot=nvfp4_vs_slot,
+        stride_nvfp4_vs_head=nvfp4_vs_head,
+        stride_nvfp4_vs_dim=nvfp4_vs_dim,
         query_start_len_ptr=cu_seqlens_q,
         BLOCK_Q=BLOCK_Q,
         num_seqs=num_seqs,
