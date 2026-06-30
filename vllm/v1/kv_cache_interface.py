@@ -42,6 +42,7 @@ class KVQuantMode(IntEnum):
     INT8_PER_TOKEN_HEAD = 2  # per-token-head dynamic scales for int8
     FP8_PER_TOKEN_HEAD = 3  # per-token-head dynamic scales for fp8
     NVFP4 = 4  # packed fp4 data + fp8 block scales
+    FP8_K_NVFP4_V = 5  # fp8 K + packed nvfp4 V
 
     @property
     def is_per_token_head(self) -> bool:
@@ -54,7 +55,7 @@ class KVQuantMode(IntEnum):
     @property
     def is_nvfp4(self) -> bool:
         """True for NVFP4 packed quantization mode."""
-        return self == KVQuantMode.NVFP4
+        return self in (KVQuantMode.NVFP4, KVQuantMode.FP8_K_NVFP4_V)
 
 
 def get_kv_quant_mode(kv_cache_dtype: str) -> KVQuantMode:
@@ -65,6 +66,8 @@ def get_kv_quant_mode(kv_cache_dtype: str) -> KVQuantMode:
         return KVQuantMode.FP8_PER_TOKEN_HEAD
     if kv_cache_dtype == "nvfp4":
         return KVQuantMode.NVFP4
+    if kv_cache_dtype == "fp8_k_nvfp4_v":
+        return KVQuantMode.FP8_K_NVFP4_V
     if isinstance(kv_cache_dtype, str) and kv_cache_dtype.startswith("fp8"):
         return KVQuantMode.FP8_PER_TENSOR
     return KVQuantMode.NONE
@@ -196,10 +199,12 @@ class AttentionSpec(KVCacheSpec):
     def real_page_size_bytes(self) -> int:
         if self.kv_quant_mode.is_nvfp4:
             # Packed layout: fp4 data + fp8 block scales per head.
-            full_dim = nvfp4_kv_cache_full_dim(self.head_size)
+            if self.kv_quant_mode == KVQuantMode.FP8_K_NVFP4_V:
+                full_dim = self.head_size + nvfp4_kv_cache_full_dim(self.head_size)
+            else:
+                full_dim = 2 * nvfp4_kv_cache_full_dim(self.head_size)
             return (
-                2
-                * self.block_size
+                self.block_size
                 * self.num_kv_heads
                 * full_dim
                 * get_dtype_size(self.dtype)
@@ -324,9 +329,12 @@ class FullAttentionSpec(AttentionSpec):
             # Packed layout per head: fp4 data + fp8 block scales.
             # fp4 data: head_size//2 bytes (2 fp4 values per byte)
             # fp8 block scale: head_size//16 bytes (1 scale per 16 elements)
-            last_dim = nvfp4_kv_cache_full_dim(
-                self.head_size
-            ) + nvfp4_kv_cache_full_dim(self.head_size_v)
+            if self.kv_quant_mode == KVQuantMode.FP8_K_NVFP4_V:
+                last_dim = self.head_size + nvfp4_kv_cache_full_dim(self.head_size_v)
+            else:
+                last_dim = nvfp4_kv_cache_full_dim(
+                    self.head_size
+                ) + nvfp4_kv_cache_full_dim(self.head_size_v)
             return (
                 self.block_size
                 * self.num_kv_heads
@@ -501,9 +509,12 @@ class SlidingWindowSpec(AttentionSpec):
     def real_page_size_bytes(self) -> int:
         # Mirror ``FullAttentionSpec.real_page_size_bytes`` for NVFP4 KV cache.
         if self.kv_quant_mode.is_nvfp4:
-            last_dim = nvfp4_kv_cache_full_dim(
-                self.head_size
-            ) + nvfp4_kv_cache_full_dim(self.head_size_v)
+            if self.kv_quant_mode == KVQuantMode.FP8_K_NVFP4_V:
+                last_dim = self.head_size + nvfp4_kv_cache_full_dim(self.head_size_v)
+            else:
+                last_dim = nvfp4_kv_cache_full_dim(
+                    self.head_size
+                ) + nvfp4_kv_cache_full_dim(self.head_size_v)
             return (
                 self.block_size
                 * self.num_kv_heads

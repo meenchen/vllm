@@ -48,6 +48,7 @@ STR_DTYPE_TO_TORCH_DTYPE = {
     "turboquant_k3v4_nc": torch.uint8,
     "turboquant_3bit_nc": torch.uint8,
     "nvfp4": torch.uint8,
+    "fp8_k_nvfp4_v": torch.uint8,
 }
 
 TORCH_DTYPE_TO_NUMPY_DTYPE = {
@@ -497,6 +498,60 @@ def nvfp4_kv_cache_split_views(kv_cache: torch.Tensor) -> tuple[tuple, tuple]:
     k_data, k_scale = _nvfp4_split_data_scale(kv_cache[:, 0])
     v_data, v_scale = _nvfp4_split_data_scale(kv_cache[:, 1])
     return (k_data, v_data), (k_scale, v_scale)
+
+
+def fp8_k_nvfp4_v_cache_split_views(
+    kv_cache: torch.Tensor,
+    head_size: int,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    """Split a packed FP8-K/NVFP4-V cache into native attention views.
+
+    Each page is ``[K_fp8 | V_fp4 | V_scale]``. The returned tensors preserve
+    the logical NHD shape while their strides retain the physical cache layout.
+    """
+    if kv_cache.dim() != 4 or kv_cache.dtype != torch.uint8:
+        raise ValueError(
+            "fp8_k_nvfp4_v cache must be a 4D uint8 tensor with shape "
+            "[num_pages, dim_1, dim_2, head_size + "
+            "nvfp4_full_dim(head_size)]"
+        )
+    total_dim = kv_cache.shape[-1]
+    expected_dim = head_size + nvfp4_kv_cache_full_dim(head_size)
+    if head_size % 64 != 0 or total_dim != expected_dim:
+        raise ValueError(f"Invalid fp8_k_nvfp4_v last dim {total_dim}")
+    data_dim = head_size // 2
+    scale_dim = head_size // 16
+
+    num_pages, dim_1, dim_2 = kv_cache.shape[:3]
+    page_bytes = kv_cache.stride(0)
+    base = kv_cache.storage_offset()
+
+    def segment(
+        offset: int,
+        dim: int,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        s1 = kv_cache.stride(1) * dim // total_dim
+        s2 = kv_cache.stride(2) * dim // total_dim
+        return torch.as_strided(
+            kv_cache,
+            (num_pages, dim_1, dim_2, dim),
+            (page_bytes, s1, s2, 1),
+            storage_offset=base + offset,
+        ).view(dtype)
+
+    k_cache = segment(0, head_size, torch.float8_e4m3fn)
+    v_data = segment(dim_1 * dim_2 * head_size, data_dim, torch.uint8)
+    v_scale = segment(
+        dim_1 * dim_2 * (head_size + data_dim),
+        scale_dim,
+        torch.float8_e4m3fn,
+    )
+    return k_cache, v_data, v_scale
 
 
 def create_kv_caches_with_random_flash(

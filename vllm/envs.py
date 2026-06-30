@@ -213,6 +213,7 @@ if TYPE_CHECKING:
     VLLM_SSM_CONV_STATE_LAYOUT: Literal["SD", "DS"] | None = None
     VLLM_COMPUTE_NANS_IN_LOGITS: bool = False
     VLLM_NVFP4_KV_QUANT_ALGO: str = "default"
+    VLLM_FP8_K_NVFP4_V_NATIVE_DECODE: bool = False
     VLLM_ROCM_QUICK_REDUCE_QUANTIZATION: Literal[
         "FP", "INT8", "INT6", "INT4", "NONE"
     ] = "NONE"
@@ -1627,6 +1628,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # or bad hardware but it may add compute overhead.
     "VLLM_COMPUTE_NANS_IN_LOGITS": lambda: bool(
         int(os.getenv("VLLM_COMPUTE_NANS_IN_LOGITS", "0"))
+    ),
+    # Use the native SM100 decode kernel for FP8-K/NVFP4-V KV cache.
+    "VLLM_FP8_K_NVFP4_V_NATIVE_DECODE": lambda: bool(
+        int(os.getenv("VLLM_FP8_K_NVFP4_V_NATIVE_DECODE", "0"))
     ),
     # Select the NVFP4 KV cache store scale search algorithm. The default
     # matches the existing max/6 path; four_over_six tries max/6 and max/4

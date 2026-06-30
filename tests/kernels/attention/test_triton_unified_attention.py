@@ -5,9 +5,14 @@
 import pytest
 import torch
 
+from tests.kernels.quantization.nvfp4_utils import dequant_nvfp4_kv_cache
 from vllm.platforms import current_platform
 from vllm.utils.math_utils import next_power_of_2
-from vllm.utils.torch_utils import set_random_seed
+from vllm.utils.torch_utils import (
+    fp8_k_nvfp4_v_cache_split_views,
+    nvfp4_kv_cache_full_dim,
+    set_random_seed,
+)
 from vllm.v1.attention.ops.triton_unified_attention import unified_attention
 from vllm.v1.kv_cache_interface import KVQuantMode
 
@@ -340,6 +345,148 @@ def test_triton_unified_attn_bf16_query_fp8_kv(
         torch.testing.assert_close(output, ref_output, atol=atol, rtol=rtol),
         f"{torch.max(torch.abs(output - ref_output))}",
     )
+
+
+@pytest.mark.skipif(
+    not current_platform.is_device_capability_family(100),
+    reason="FP8-K/NVFP4-V requires an NVIDIA SM100-family GPU",
+)
+@pytest.mark.parametrize("layout", ["NHD", "HND"])
+@pytest.mark.parametrize(
+    "query_len,kv_len,seq_threshold_3d", [(1, 513, 8), (33, 65, 8)]
+)
+@torch.inference_mode()
+def test_triton_unified_attn_fp8_k_nvfp4_v(
+    layout: str,
+    query_len: int,
+    kv_len: int,
+    seq_threshold_3d: int,
+) -> None:
+    """Exercise the production mixed store and native 2D/3D attention loads."""
+    torch.set_default_device(DEVICE_TYPE)
+    set_random_seed(0)
+
+    num_blocks = 64
+    block_size = 16
+    num_query_heads = 8
+    num_kv_heads = 2
+    head_size = 128
+    num_tokens = num_blocks * block_size
+    full_dim = head_size + nvfp4_kv_cache_full_dim(head_size)
+
+    if layout == "NHD":
+        kv_cache = torch.zeros(
+            num_blocks,
+            block_size,
+            num_kv_heads,
+            full_dim,
+            dtype=torch.uint8,
+        )
+    else:
+        kv_cache = torch.zeros(
+            num_blocks,
+            num_kv_heads,
+            block_size,
+            full_dim,
+            dtype=torch.uint8,
+        ).permute(0, 2, 1, 3)
+
+    key = torch.randn(num_tokens, num_kv_heads, head_size, dtype=torch.bfloat16)
+    value = torch.randn_like(key)
+    k_scale = (key.abs().amax().float() / torch.finfo(FP8_DTYPE).max).clamp_min(1e-6)
+    v_scale = (value.abs().amax().float() / torch.finfo(FP8_DTYPE).max).clamp_min(1e-6)
+    slot_mapping = torch.arange(num_tokens, dtype=torch.int64)
+    torch.ops._C_cache_ops.reshape_and_cache_flash(
+        key,
+        value,
+        kv_cache,
+        kv_cache,
+        slot_mapping,
+        "fp8_k_nvfp4_v",
+        k_scale,
+        v_scale,
+    )
+
+    key_cache, value_data, value_scales = fp8_k_nvfp4_v_cache_split_views(
+        kv_cache, head_size
+    )
+    ref_key_cache = (key_cache.to(torch.bfloat16) * k_scale).contiguous()
+    ref_value_cache = (
+        dequant_nvfp4_kv_cache(
+            value_data.permute(0, 2, 1, 3),
+            value_scales.permute(0, 2, 1, 3),
+            v_scale.item(),
+            head_size,
+            block_size,
+            scale_is_swizzled=False,
+        )
+        .permute(0, 2, 1, 3)
+        .contiguous()
+    )
+
+    query = torch.randn(query_len, num_query_heads, head_size, dtype=torch.bfloat16)
+    q_scale = (query.abs().amax().float() / torch.finfo(FP8_DTYPE).max).clamp_min(1e-6)
+    quant_query = (query / q_scale).to(FP8_DTYPE)
+    dequant_query = quant_query.to(torch.bfloat16) * q_scale
+
+    num_seq_blocks = (kv_len + block_size - 1) // block_size
+    block_tables = torch.arange(num_seq_blocks, dtype=torch.int32).unsqueeze(0)
+    query_lens = [query_len]
+    kv_lens = [kv_len]
+    cu_query_lens = torch.tensor([0, query_len], dtype=torch.int32)
+    kv_lens_tensor = torch.tensor(kv_lens, dtype=torch.int32)
+    output = torch.empty_like(query)
+
+    num_segments = 16
+    softmax_segm_output = torch.empty(
+        seq_threshold_3d,
+        num_query_heads,
+        num_segments,
+        head_size,
+        dtype=torch.float32,
+    )
+    softmax_segm_max = torch.empty(
+        seq_threshold_3d, num_query_heads, num_segments, dtype=torch.float32
+    )
+    softmax_segm_expsum = torch.empty_like(softmax_segm_max)
+    scale_shape = (1, num_kv_heads)
+
+    unified_attention(
+        q=quant_query,
+        k=key_cache,
+        v=value_data,
+        out=output,
+        cu_seqlens_q=cu_query_lens,
+        max_seqlen_q=query_len,
+        seqused_k=kv_lens_tensor,
+        max_seqlen_k=kv_len,
+        softmax_scale=head_size**-0.5,
+        causal=True,
+        window_size=(-1, -1),
+        block_table=block_tables,
+        softcap=0,
+        q_descale=q_scale,
+        k_descale=k_scale.expand(scale_shape),
+        v_descale=v_scale.expand(scale_shape),
+        seq_threshold_3D=seq_threshold_3d,
+        num_par_softmax_segments=num_segments,
+        softmax_segm_output=softmax_segm_output,
+        softmax_segm_max=softmax_segm_max,
+        softmax_segm_expsum=softmax_segm_expsum,
+        kv_quant_mode=KVQuantMode.FP8_K_NVFP4_V,
+        nvfp4_v_scale_cache=value_scales,
+    )
+
+    ref_output = ref_paged_attn(
+        query=dequant_query,
+        key_cache=ref_key_cache,
+        value_cache=ref_value_cache,
+        query_lens=query_lens,
+        kv_lens=kv_lens,
+        block_tables=block_tables,
+        scale=head_size**-0.5,
+    )
+    torch.testing.assert_close(output.float(), ref_output.float(), atol=0.05, rtol=0.05)
 
 
 @pytest.mark.parametrize(
