@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FP8-K / NVFP4-V Accuracy and Performance Report</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #18212b;
+      --muted: #5c6875;
+      --line: #d8dee5;
+      --soft: #f4f6f8;
+      --paper: #ffffff;
+      --native: #16715a;
+      --fp8: #245ca6;
+      --nvfp4: #a35b16;
+      --fallback: #6b7280;
+      --good-bg: #e9f5f0;
+      --warn-bg: #fff4df;
+    }
+    * { box-sizing: border-box; }
+    html, body { max-width: 100%; overflow-x: hidden; }
+    body {
+      margin: 0;
+      background: var(--soft);
+      color: var(--ink);
+      font: 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+    header {
+      background: #202933;
+      color: #fff;
+      border-bottom: 4px solid var(--native);
+    }
+    header .inner, main { width: calc(100% - 32px); max-width: 1180px; margin: 0 auto; }
+    header .inner { padding: 30px 0 26px; }
+    h1 { margin: 0 0 8px; font-size: 30px; line-height: 1.15; letter-spacing: 0; }
+    header p { max-width: 850px; margin: 0; color: #d5dce3; font-size: 15px; }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 22px;
+      margin-top: 18px;
+      color: #aeb9c4;
+      font-size: 12px;
+    }
+    .meta strong { color: #fff; font-weight: 650; }
+    .meta span, code { overflow-wrap: anywhere; }
+    main { padding: 26px 0 48px; }
+    section { margin: 0 0 30px; }
+    h2 { margin: 0 0 12px; font-size: 19px; line-height: 1.3; }
+    h3 { margin: 0 0 7px; font-size: 15px; }
+    p { margin: 7px 0; }
+    .readout {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .metric {
+      min-height: 122px;
+      padding: 16px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+    }
+    .metric .value { margin: 5px 0 3px; font-size: 27px; font-weight: 720; line-height: 1.1; }
+    .metric .label { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+    .metric p { color: var(--muted); font-size: 13px; }
+    .native { color: var(--native); }
+    .fp8 { color: var(--fp8); }
+    .nvfp4 { color: var(--nvfp4); }
+    .callout {
+      padding: 13px 15px;
+      border-left: 4px solid var(--native);
+      background: var(--good-bg);
+    }
+    .callout.warn { border-color: var(--nvfp4); background: var(--warn-bg); }
+    .table-wrap { width: 100%; max-width: 100%; overflow-x: auto; background: var(--paper); border: 1px solid var(--line); }
+    table { width: 100%; border-collapse: collapse; min-width: 790px; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+    th { background: #edf1f4; color: #3e4a56; font-size: 12px; font-weight: 700; }
+    th:first-child, td:first-child { text-align: left; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr.highlight { background: #f0f8f5; }
+    .bar-cell { min-width: 190px; }
+    .bar-track { display: inline-block; width: 112px; height: 8px; margin-left: 8px; background: #e1e6ea; vertical-align: middle; }
+    .bar { display: block; height: 100%; }
+    .bar.native-bg { background: var(--native); }
+    .bar.fp8-bg { background: var(--fp8); }
+    .bar.nvfp4-bg { background: var(--nvfp4); }
+    .bar.fallback-bg { background: var(--fallback); }
+    .delta-good { color: #0b6a4f; font-weight: 650; }
+    .delta-bad { color: #a23f31; font-weight: 650; }
+    .layout {
+      display: grid;
+      grid-template-columns: 128fr 64fr 8fr;
+      height: 54px;
+      overflow: hidden;
+      border: 1px solid #aeb7c0;
+      background: var(--paper);
+    }
+    .layout div { display: grid; place-items: center; padding: 5px; border-right: 1px solid #fff; color: #fff; font-size: 12px; font-weight: 700; text-align: center; }
+    .layout div:last-child { border-right: 0; color: var(--ink); }
+    .layout-k { background: var(--fp8); }
+    .layout-v { background: var(--native); }
+    .layout-s { background: #d7b85c; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .panel { padding: 15px; background: var(--paper); border: 1px solid var(--line); border-radius: 6px; }
+    ul { margin: 7px 0; padding-left: 21px; }
+    li { margin: 5px 0; }
+    code { padding: 1px 4px; background: #edf1f4; border-radius: 3px; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .footnote { color: var(--muted); font-size: 12px; }
+    header p, .metric p, .callout, .footnote, li { overflow-wrap: anywhere; }
+    .status { color: var(--native); font-weight: 700; }
+    @media (max-width: 760px) {
+      header .inner, main { width: calc(100% - 20px); }
+      h1 { font-size: 24px; }
+      .readout, .two-col { grid-template-columns: 1fr; }
+      .metric { min-height: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="inner">
+      <h1>FP8-K / NVFP4-V Evaluation</h1>
+      <p>Qwen3-8B implementation, accuracy, capacity, and serving performance for
+      the packed 8-bit K plus 4-bit V cache, including a native FlashInfer XQA
+      decode specialization, a packaged SM100 cubin, and the hardware-assisted
+      Triton fallback.</p>
+      <div class="meta">
+        <span><strong>vLLM</strong> 0.1.dev17927+g62d5a1caf.d20260630</span>
+        <span><strong>FlashInfer</strong> 0.6.12 base</span>
+        <span><strong>Hardware</strong> 4x NVIDIA B200 (SM100)</span>
+        <span><strong>Generated</strong> 2026-06-30</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>Decision Readout</h2>
+      <div class="readout">
+        <article class="metric">
+          <div class="label">Best mixed throughput</div>
+          <div class="value native">10,879 tok/s</div>
+          <p>Packaged cubin, no-logging balanced workload; median of three runs.</p>
+        </article>
+        <article class="metric">
+          <div class="label">Gap to FP8 KV</div>
+          <div class="value fp8">-6.2%</div>
+          <p>FP8 reaches 11,601 tok/s through FlashInfer TRTLLM attention.</p>
+        </article>
+        <article class="metric">
+          <div class="label">Capacity over FP8</div>
+          <div class="value nvfp4">+27.8%</div>
+          <p>11.93M native mixed-cache tokens versus 9.34M FP8-cache tokens.</p>
+        </article>
+      </div>
+      <p class="callout"><strong>Quality result:</strong> native mixed KV scores
+      66.56%, 58.81%, and 54.52% on AIME25, GPQA, and LCB. That is +0.47,
+      -0.28, and -0.72 percentage points versus FP8, while improving over
+      default NVFP4 by 2.08, 1.59, and 1.82 points.</p>
+      <p class="callout warn"><strong>Performance result:</strong> the packaged
+      cubin reaches 10,879 tok/s on the balanced workload, 6.2% behind FP8 and
+      15.2% ahead of the current-nightly NVFP4 rerun. It is 1.1% above source
+      XQA at the median, with overlapping run ranges. The XQA kernel itself
+      matches FP8 XQA, but the shipped TRTLLM-GEN artifact still has no
+      E4M3-K/E2M1-V tensor-core cubin.</p>
+    </section>
+
+    <section>
+      <h2>Serving Performance</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>KV path</th>
+              <th>Output throughput</th>
+              <th>Median TPOT</th>
+              <th>Mean TTFT</th>
+              <th>KV capacity</th>
+              <th>Delta vs FP8</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="highlight">
+              <td><strong>FP8-K / NVFP4-V packaged XQA cubin</strong></td>
+              <td class="bar-cell">10,879.11 tok/s <span class="bar-track"><span class="bar native-bg" style="width:93.8%"></span></span></td>
+              <td>5.053 ms</td>
+              <td>215.85 ms</td>
+              <td>11,933,600</td>
+              <td class="delta-bad">-6.2%</td>
+            </tr>
+            <tr>
+              <td>FP8-K / NVFP4-V source-JIT XQA</td>
+              <td class="bar-cell">10,756.09 tok/s <span class="bar-track"><span class="bar fallback-bg" style="width:92.7%"></span></span></td>
+              <td>5.062 ms</td>
+              <td>214.89 ms</td>
+              <td>11,933,600</td>
+              <td class="delta-bad">-7.3%</td>
+            </tr>
+            <tr>
+              <td>FP8-K / NVFP4-V Triton fallback</td>
+              <td class="bar-cell">8,935.13 tok/s <span class="bar-track"><span class="bar fallback-bg" style="width:77.0%"></span></span></td>
+              <td>5.676 ms</td>
+              <td>350.44 ms</td>
+              <td>11,952,256</td>
+              <td class="delta-bad">-23.0%</td>
+            </tr>
+            <tr>
+              <td><strong>FP8 KV, FlashInfer TRTLLM</strong></td>
+              <td class="bar-cell">11,601.36 tok/s <span class="bar-track"><span class="bar fp8-bg" style="width:100%"></span></span></td>
+              <td>4.486 ms</td>
+              <td>254.57 ms</td>
+              <td>9,337,696</td>
+              <td>baseline</td>
+            </tr>
+            <tr>
+              <td>NVFP4 KV, FlashInfer TRTLLM</td>
+              <td class="bar-cell">9,440.11 tok/s <span class="bar-track"><span class="bar nvfp4-bg" style="width:81.4%"></span></span></td>
+              <td>5.201 ms</td>
+              <td>380.99 ms</td>
+              <td>16,571,248</td>
+              <td class="delta-bad">-18.6%</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="footnote">Balanced workload: 1,024 requests, 1,024 input tokens,
+      256 output tokens, concurrency 64, 64 warmups, greedy sampling, and three
+      independent seeds. Uvicorn access logs and periodic stats were disabled.
+      Packaged/source mixed cases ran on <code>nvl72d008-T04</code> in job
+      <code>565709</code>; FP8/NVFP4 baselines ran on <code>nvl72d063-T12</code>
+      in job <code>565973</code>. The current supported NVFP4 path requires
+      quantized queries and TRTLLM prefill/decode. It did not reproduce the
+      earlier 11,148 tok/s result; disabling query quantization fails in the
+      generic prefill planner because <code>torch.nvfp4</code> is not a dtype.
+      Capacity is the server-reported token count.</p>
+    </section>
+
+    <section>
+      <h2>Prior Decode-Heavy Performance</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>KV path</th>
+              <th>Output throughput</th>
+              <th>Median TPOT</th>
+              <th>Mean TTFT</th>
+              <th>Delta vs FP8</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>FP8 KV, FlashInfer TRTLLM</strong></td>
+              <td class="bar-cell">14,470.45 tok/s <span class="bar-track"><span class="bar fp8-bg" style="width:100%"></span></span></td>
+              <td>4.078 ms</td>
+              <td>337.64 ms</td>
+              <td>baseline</td>
+            </tr>
+            <tr>
+              <td>NVFP4 KV, FlashInfer TRTLLM</td>
+              <td class="bar-cell">13,800.15 tok/s <span class="bar-track"><span class="bar nvfp4-bg" style="width:95.4%"></span></span></td>
+              <td>4.238 ms</td>
+              <td>415.26 ms</td>
+              <td class="delta-bad">-4.6%</td>
+            </tr>
+            <tr class="highlight">
+              <td><strong>FP8-K / NVFP4-V native XQA</strong></td>
+              <td class="bar-cell">13,289.85 tok/s <span class="bar-track"><span class="bar native-bg" style="width:91.8%"></span></span></td>
+              <td>4.591 ms</td>
+              <td>232.47 ms</td>
+              <td class="delta-bad">-8.2%</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="footnote">This section predates cubin packaging and was not rerun.
+      Decode-heavy workload: 512 requests, 1,024 input and
+      1,024 output tokens, concurrency 64, 64 warmups, and three seeds. Native
+      XQA is 3.7% behind NVFP4 and 8.2% behind FP8 in output throughput. Its TPOT
+      is 8.8% and 11.9% higher, respectively. This is the relevant residual gap
+      for long generation; the balanced workload benefits from the mixed path's
+      faster Triton prefill.</p>
+    </section>
+
+    <section>
+      <h2>Accuracy</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>KV format</th>
+              <th>AIME25</th>
+              <th>GPQA</th>
+              <th>LCB pass@1</th>
+              <th>Delta vs FP8</th>
+              <th>Delta vs default NVFP4</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>BF16</td>
+              <td>66.98%</td>
+              <td>59.03%</td>
+              <td>55.01%</td>
+              <td>+0.89 / -0.06 / -0.22 pp</td>
+              <td>+2.50 / +1.81 / +2.31 pp</td>
+            </tr>
+            <tr>
+              <td><strong>FP8 KV</strong></td>
+              <td>66.09%</td>
+              <td>59.09%</td>
+              <td>55.23%</td>
+              <td>baseline</td>
+              <td>+1.61 / +1.87 / +2.53 pp</td>
+            </tr>
+            <tr class="highlight">
+              <td><strong>FP8-K / NVFP4-V native XQA</strong></td>
+              <td>66.56%</td>
+              <td>58.81%</td>
+              <td>54.52%</td>
+              <td>+0.47 / -0.28 / -0.72 pp</td>
+              <td class="delta-good">+2.08 / +1.59 / +1.82 pp</td>
+            </tr>
+            <tr>
+              <td>FP8-K / NVFP4-V Triton read</td>
+              <td>65.94%</td>
+              <td>58.65%</td>
+              <td>54.71%</td>
+              <td>-0.16 / -0.44 / -0.52 pp</td>
+              <td>+1.46 / +1.43 / +2.01 pp</td>
+            </tr>
+            <tr>
+              <td>Default NVFP4 KV</td>
+              <td>64.48%</td>
+              <td>57.22%</td>
+              <td>52.70%</td>
+              <td>-1.61 / -1.87 / -2.53 pp</td>
+              <td>baseline</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="footnote">AIME25 and GPQA use 64 repeats; LCB uses 8 repeats. Total
+      observations are 1,920, 12,672, and 3,632 per format. Native XQA jobs are
+      552234, 552235, and 552236 and all use torch.compile plus CUDA graphs. The
+      native path consumes BF16 Q, while the TRTLLM FP8/NVFP4 baselines quantize Q;
+      the table therefore represents complete serving paths, not an isolated KV-only
+      error measurement. Sub-point differences should be treated as within sampling
+      noise unless supported by the reported repeated-run statistics.</p>
+    </section>
+
+    <section>
+      <h2>Cache Layout</h2>
+      <div class="layout" aria-label="200-byte packed cache layout">
+        <div class="layout-k">K: E4M3<br>128 bytes</div>
+        <div class="layout-v">V: E2M1<br>64 bytes</div>
+        <div class="layout-s">V scales<br>8 bytes</div>
+      </div>
+      <p class="footnote">Per head-token at head dimension 128: 200 bytes total.
+      The physical page layout stores all K data, then V data, then V scales. The
+      cache is a single allocation with logical strided views, not a BF16 shadow.</p>
+    </section>
+
+    <section>
+      <h2>Implementation</h2>
+      <div class="two-col">
+        <article class="panel">
+          <h3>Native XQA decode</h3>
+          <ul>
+            <li>Extends FlashInfer XQA with independent compile-time K and V cache types.</li>
+            <li>Uses E4M3 K, packed E2M1 V, and one E4M3 scale per 16 V elements.</li>
+            <li>Passes independent K/V data strides, scale strides, and global scales.</li>
+            <li>Supports BF16/FP16 queries, head dimension 128, and GQA ratios 1/2/4/8/16.</li>
+            <li>Reuses XQA online softmax, paging, multi-CTA reduction, and sink support.</li>
+            <li>Uses packed FP8/FP4-to-FP16 conversion followed by vector BF16 conversion.</li>
+          </ul>
+        </article>
+        <article class="panel">
+          <h3>vLLM integration</h3>
+          <ul>
+            <li>Wraps XQA in an opaque custom op with declared output/workspace mutations.</li>
+            <li>Preallocates rank-wide workspace and semaphores before graph capture.</li>
+            <li>Contains no CPU polling, host synchronization, or forward-time allocation.</li>
+            <li>Native decode is opt-in via <code>VLLM_FP8_K_NVFP4_V_NATIVE_DECODE=1</code>.</li>
+            <li>Unsupported shapes and prefill use the same packed-cache Triton fallback.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Packaged Cubin</h2>
+      <div class="two-col">
+        <article class="panel">
+          <h3>TensorRT-LLM source</h3>
+          <ul>
+            <li>Builds a public CUDA XQA specialization for E4M3 K and E2M1 V.</li>
+            <li>Targets SM100a, BF16 query/output, head dimension 128, GQA ratio 4, and page size 16.</li>
+            <li>Produces a 124,664-byte cubin with SHA-256 <code>1250d87f...e70</code>.</li>
+            <li>Direct CUDA-driver validation matches the reference with zero maximum absolute error.</li>
+            <li>This is an XQA cubin, not a new proprietary TRTLLM-GEN tensor-core specialization.</li>
+          </ul>
+        </article>
+        <article class="panel">
+          <h3>FlashInfer distribution</h3>
+          <ul>
+            <li>Ships the cubin in the wheel and verifies its full SHA-256 before loading.</li>
+            <li>Caches the module and function per CUDA context; decode launches do not poll or synchronize the CPU.</li>
+            <li>Uses a thin CUDA-driver launcher compatible with torch.compile and CUDA graph capture.</li>
+            <li>Selects the cubin only for the exact specialization; other shapes retain source XQA.</li>
+            <li>Registers the launcher for FlashInfer AOT/JIT-cache wheel generation.</li>
+          </ul>
+        </article>
+      </div>
+      <p class="footnote">The tested source wheel still JIT-compiles the thin
+      Python/CUDA binding. Packaged and source-XQA wrapper builds took 9.5 and
+      8.3 seconds, respectively, and full server startup was dominated by model
+      and Python initialization. A prebuilt <code>flashinfer-jit-cache</code>
+      wheel is required to remove wrapper compilation entirely.</p>
+    </section>
+
+    <section>
+      <h2>Kernel Tuning</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Variant</th><th>CUDA graph latency</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr class="highlight"><td>Mixed XQA, vector BF16 conversion</td><td>0.02462 ms/layer</td><td class="status">selected</td></tr>
+            <tr><td>Existing FP8 XQA reference</td><td>0.02459 ms/layer</td><td>within 0.1%</td></tr>
+            <tr><td>Mixed XQA before conversion optimization</td><td>0.02872 ms/layer</td><td>14.3% latency reduction</td></tr>
+            <tr><td>Mixed XQA, forced two subsequences</td><td>0.03677 ms/layer</td><td>49.3% slower</td></tr>
+            <tr><td>Rejected scalar mixed CUDA kernel</td><td>0.07682 ms/layer</td><td>212.0% slower</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="footnote">Standalone shape: batch 64, context 1,280, 8 query heads,
+      2 KV heads, head dimension 128, page size 16, BF16 Q, CUDA graph replay on B200.
+      The optimized mixed kernel is effectively at FP8 XQA parity. The remaining
+      server gap is versus TRTLLM-GEN, not versus XQA. Vectorizing four FP8-K
+      stores per thread was rejected: batch-64 store latency stayed at 0.00410 ms
+      and batch-256 latency regressed by 9.5%.</p>
+    </section>
+
+    <section>
+      <h2>Validation</h2>
+      <div class="two-col">
+        <article class="panel">
+          <h3>Passed</h3>
+          <ul>
+            <li><span class="status">2/2</span> NHD/HND XQA graph tests with opposite FP4 V heads at 1% tolerance.</li>
+            <li><span class="status">2/2</span> packaged-cubin NHD/HND numerical and CUDA graph tests.</li>
+            <li><span class="status">Passed</span> offline wheel loading with downloads disabled and exact SHA verification.</li>
+            <li><span class="status">0.000000</span> direct cubin maximum absolute error against the CUDA reference.</li>
+            <li><span class="status">0.001953</span> maximum absolute error in random NHD/HND reference checks.</li>
+            <li><span class="status">Passed</span> direct production-store-to-XQA numerical test.</li>
+            <li><span class="status">4/4</span> Triton NHD/HND decode/prefill numerical tests.</li>
+            <li><span class="status">Passed</span> vLLM <code>torch.compile</code>.</li>
+            <li><span class="status">Passed</span> vLLM full and piecewise CUDA graph capture.</li>
+            <li><span class="status">Passed</span> Qwen3-8B TP4 server and correct live response.</li>
+            <li><span class="status">0 failed</span> requests in every timed run.</li>
+          </ul>
+        </article>
+        <article class="panel">
+          <h3>Benchmark method</h3>
+          <ul>
+            <li>Qwen3-8B BF16 model, tensor parallel 4, vLLM nightly.</li>
+            <li>Balanced: 1,024 requests at 1,024 input / 256 output tokens.</li>
+            <li>Decode-heavy: 512 requests at 1,024 input / 1,024 output tokens.</li>
+            <li>64 warmup requests and three timed runs with seeds 1, 2, and 3.</li>
+            <li>Prefix caching enabled; distinct seeds prevent cross-run prompt reuse.</li>
+            <li>Access logs and periodic stats disabled; full CUDA graphs enabled.</li>
+            <li>Final balanced mixed node <code>nvl72d008-T04</code>; baseline node <code>nvl72d063-T12</code>.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Artifacts</h2>
+      <p>Balanced performance: <code>/lustre/fsw/portfolios/coreai/users/weimingc/results/kv-perf-long-552840</code></p>
+      <p>Decode-heavy performance: <code>/lustre/fsw/portfolios/coreai/users/weimingc/results/kv-perf-long-552845</code></p>
+      <p>Final mixed XQA tests: Slurm job <code>552955</code></p>
+      <p>Kernel tuning and packed conversion benchmark: Slurm job <code>552546</code></p>
+      <p>Production store-to-XQA validation: Slurm job <code>552222</code></p>
+      <p>End-to-end compile, graph, and server validation: Slurm job <code>552594</code></p>
+      <p>Packaged cubin rebuild and direct validation: Slurm job <code>565141</code></p>
+      <p>Packaged FlashInfer numerical and CUDA graph validation: Slurm job <code>565246</code></p>
+      <p>Packaged/source vLLM serving benchmark: Slurm job <code>565709</code></p>
+      <p>Current-nightly FP8/NVFP4 baselines: Slurm job <code>565973</code></p>
+      <p>Rejected BF16-query NVFP4 prefill policy: Slurm job <code>567189</code></p>
+      <p>Feature wheel: <code>artifacts/fp8k_nvfp4v/flashinfer_python-0.6.12-py3-none-any.whl</code>
+      (SHA-256 <code>08ee5215...4d0</code>)</p>
+      <p>TensorRT-LLM branch: <a href="https://github.com/meenchen/TensorRT-LLM/tree/fp8-k-nvfp4-v-xqa-cubin"><code>fp8-k-nvfp4-v-xqa-cubin</code></a>
+      at <code>34a355a8</code></p>
+      <p>FlashInfer branch: <a href="https://github.com/meenchen/flashinfer/tree/fp8-k-nvfp4-v-native"><code>fp8-k-nvfp4-v-native</code></a>
+      at <code>518746d0</code></p>
+      <p>vLLM branch: <a href="https://github.com/meenchen/vllm/tree/nvfp4-v-fp8-k-kv-prototype"><code>nvfp4-v-fp8-k-kv-prototype</code></a>
+      at <code>e21a25d99</code></p>
+      <p>Native accuracy: <code>/lustre/fsw/portfolios/coreai/users/weimingc/eval_rundirs/kv_study/qwen3_8b/fp8k_nvfp4v_xqa_20260629_191253</code></p>
+      <p>Baseline accuracy: <code>reports/qwen3_8b_nvfp4_skipn128_r64_lcb8_plus_fp8k_nvfp4v_report.html</code></p>
+    </section>
+  </main>
+</body>
+</html>
