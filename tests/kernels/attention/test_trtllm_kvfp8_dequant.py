@@ -438,3 +438,99 @@ def test_cross_layer_many_layers():
     ref = ref_dequant(kv_cache, block_tables, k_scale, v_scale, torch.bfloat16)
 
     torch.testing.assert_close(mock_kv_cache[1:], ref[1:], atol=1e-3, rtol=1e-3)
+
+
+@torch.inference_mode()
+def test_trtllm_fp8_k_nvfp4_v_prefill_unpack():
+    from vllm.v1.attention.backends.flashinfer import (
+        trtllm_prefill_attn_fp8_k_nvfp4_v_unpack,
+    )
+
+    torch.set_default_device("cuda")
+    num_pages, num_heads, block_size, head_size = 5, 2, 8, 128
+    scale_dim = head_size // 16
+
+    k_cache = torch.randn(
+        num_pages,
+        num_heads,
+        block_size,
+        head_size,
+        dtype=torch.bfloat16,
+    ).to(FP8_DTYPE)
+    fp4_codes = torch.randint(
+        0,
+        16,
+        (num_pages, num_heads, block_size, head_size),
+        dtype=torch.uint8,
+    )
+    v_cache = fp4_codes[..., 0::2] | (fp4_codes[..., 1::2] << 4)
+
+    scale_choices = torch.tensor([0.25, 0.5, 1.0, 2.0], dtype=torch.float32)
+    logical_scales = scale_choices[
+        torch.randint(
+            0,
+            len(scale_choices),
+            (num_pages, num_heads, block_size, scale_dim),
+        )
+    ].to(FP8_DTYPE)
+    physical_scales = torch.empty_like(logical_scales)
+    scale_group = scale_dim // 4
+    for token in range(block_size):
+        for scale in range(scale_dim):
+            swizzled_token = (token // 4) * 4 + scale // scale_group
+            swizzled_scale = (scale % scale_group) * 4 + token % 4
+            physical_scales[:, :, swizzled_token, swizzled_scale] = logical_scales[
+                :, :, token, scale
+            ]
+
+    block_tables = torch.tensor([[0, 2], [4, -1]], dtype=torch.int32)
+    mock_cache, mock_block_table = trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
+        k_cache,
+        v_cache,
+        physical_scales,
+        block_tables,
+    )
+
+    expected_block_table = torch.arange(1, 5, dtype=torch.int32).reshape(2, 2)
+    torch.testing.assert_close(mock_block_table, expected_block_table)
+    e2m1 = torch.tensor(
+        [
+            0.0,
+            0.5,
+            1.0,
+            1.5,
+            2.0,
+            3.0,
+            4.0,
+            6.0,
+            -0.0,
+            -0.5,
+            -1.0,
+            -1.5,
+            -2.0,
+            -3.0,
+            -4.0,
+            -6.0,
+        ],
+        dtype=torch.float32,
+    )
+    for batch in range(block_tables.shape[0]):
+        for page in range(block_tables.shape[1]):
+            src_page = int(block_tables[batch, page].item())
+            if src_page < 0:
+                continue
+            dst_page = batch * block_tables.shape[1] + page + 1
+            expected_v = e2m1[fp4_codes[src_page].long()]
+            expected_v *= logical_scales[src_page].float().repeat_interleave(16, dim=-1)
+            torch.testing.assert_close(
+                mock_cache[dst_page, 0],
+                k_cache[src_page].to(torch.bfloat16),
+                atol=0,
+                rtol=0,
+            )
+            torch.testing.assert_close(
+                mock_cache[dst_page, 1],
+                expected_v.to(torch.bfloat16),
+                atol=0,
+                rtol=0,
+            )

@@ -23,11 +23,13 @@ from vllm.v1.core.single_type_kv_cache_manager import (
     register_all_kvcache_specs,
 )
 from vllm.v1.kv_cache_interface import (
+    AttentionSpec,
     ChunkedLocalAttentionSpec,
     CrossAttentionSpec,
     FullAttentionSpec,
     HiddenStateCacheSpec,
     KVCacheSpec,
+    KVQuantMode,
     MambaSpec,
     MLAAttentionSpec,
     SinkFullAttentionSpec,
@@ -35,6 +37,7 @@ from vllm.v1.kv_cache_interface import (
     SlidingWindowSpec,
     TQFullAttentionSpec,
     UniformTypeKVCacheSpecs,
+    get_kv_quant_mode,
 )
 from vllm.v1.kv_cache_spec_registry import (
     _REGISTRY_KVCACHESPEC_LIST,
@@ -169,6 +172,27 @@ def are_uniform_specs(*specs: KVCacheSpec) -> bool:
     return UniformTypeKVCacheSpecs.is_uniform_type(
         {f"layer_{i}": spec for i, spec in enumerate(specs)}
     )
+
+
+def test_fp8_k_nvfp4_v_quant_mode_and_page_size():
+    assert get_kv_quant_mode("fp8_k_nvfp4_v") == KVQuantMode.FP8_K_NVFP4_V
+    base_spec = AttentionSpec(
+        block_size=16,
+        num_kv_heads=8,
+        head_size=128,
+        dtype=torch.uint8,
+        kv_quant_mode=KVQuantMode.FP8_K_NVFP4_V,
+    )
+    spec = FullAttentionSpec(
+        block_size=16,
+        num_kv_heads=8,
+        head_size=128,
+        dtype=torch.uint8,
+        kv_quant_mode=KVQuantMode.FP8_K_NVFP4_V,
+    )
+    # 128-byte FP8 K + 64-byte FP4 V + 8-byte V scales per head-token.
+    assert base_spec.real_page_size_bytes == 16 * 8 * 200
+    assert spec.real_page_size_bytes == 16 * 8 * 200
 
 
 class TestKVCacheSpecRegistry:

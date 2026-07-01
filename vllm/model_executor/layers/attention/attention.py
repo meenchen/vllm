@@ -243,6 +243,12 @@ class Attention(nn.Module, AttentionLayerBase):
             kv_cache_dtype = "auto"
             calculate_kv_scales = False
 
+        if kv_cache_dtype == "fp8_k_nvfp4_v" and head_size_v not in (
+            None,
+            head_size,
+        ):
+            raise ValueError("fp8_k_nvfp4_v requires matching key and value head sizes")
+
         # llm-compressor models declare an FP8 KV-cache scheme in their
         # checkpoint config. Honor it only when the user did not explicitly
         # pick a kv_cache_dtype; an explicit choice (e.g. bfloat16) must win.
