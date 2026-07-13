@@ -68,6 +68,7 @@ case "$MODEL_KEY" in
     MAX_MODEL_LEN=40960
     MAX_NUM_SEQS=256
     PARALLELISM=256
+    MODEL_EXTRA_ARGS+=(--language-model-only)
     ;;
   nemotron3_nano_30b_a3b_nvfp4)
     MODEL=nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
