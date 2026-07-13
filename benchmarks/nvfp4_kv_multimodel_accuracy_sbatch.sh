@@ -60,6 +60,7 @@ fi
 CASE=${CASE:-default_nvfp4}
 
 MODEL_EXTRA_ARGS=()
+FLASHINFER_AUTOTUNE=enabled
 case "$MODEL_KEY" in
   qwen36_35b_a3b)
     MODEL=Qwen/Qwen3.6-35B-A3B
@@ -77,7 +78,11 @@ case "$MODEL_KEY" in
     MAX_MODEL_LEN=40960
     MAX_NUM_SEQS=128
     PARALLELISM=256
-    MODEL_EXTRA_ARGS+=(--mamba-ssm-cache-dtype float32)
+    MODEL_EXTRA_ARGS+=(
+      --mamba-ssm-cache-dtype float32
+      --no-enable-flashinfer-autotune
+    )
+    FLASHINFER_AUTOTUNE=disabled_nightly_0.6.12_gb200_segfault
     ;;
   nemotron3_super_120b_a12b_nvfp4)
     MODEL=nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
@@ -86,6 +91,8 @@ case "$MODEL_KEY" in
     MAX_MODEL_LEN=40960
     MAX_NUM_SEQS=128
     PARALLELISM=128
+    MODEL_EXTRA_ARGS+=(--no-enable-flashinfer-autotune)
+    FLASHINFER_AUTOTUNE=disabled_nightly_0.6.12_gb200_segfault
     ;;
   gpt_oss_20b)
     MODEL=openai/gpt-oss-20b
@@ -144,6 +151,7 @@ export HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-${HF_TOKEN:-}}
 export HOME=$BASE/runtime_home_nvfp4_multimodel/$RUNTIME_TAG
 export HF_HOME=$BASE/hf_cache
 export HUGGINGFACE_HUB_CACHE=$BASE/hf_cache/hub
+export TIKTOKEN_ENCODINGS_BASE=${TIKTOKEN_ENCODINGS_BASE:-$BASE/tiktoken_encodings}
 if [[ "$RUN_MODE" == "smoke" ]]; then
   export HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
   export TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
@@ -185,7 +193,22 @@ fi
 mkdir -p \
   "$HOME/.ssh" "$XDG_CACHE_HOME" "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" \
   "$TORCHINDUCTOR_CACHE_DIR" "$PYTHONPYCACHEPREFIX" \
-  "$FLASHINFER_WORKSPACE_BASE" "$VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR"
+  "$FLASHINFER_WORKSPACE_BASE" "$VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR" \
+  "$TIKTOKEN_ENCODINGS_BASE"
+
+if [[ "$MODEL_KEY" == "gpt_oss_20b" ]]; then
+  harmony_vocab=$TIKTOKEN_ENCODINGS_BASE/o200k_base.tiktoken
+  harmony_vocab_sha256=446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d
+  if [[ ! -f "$harmony_vocab" ]]; then
+    echo "Missing GPT-OSS Harmony vocabulary: $harmony_vocab" >&2
+    exit 2
+  fi
+  read -r actual_harmony_vocab_sha256 _ < <(sha256sum "$harmony_vocab")
+  if [[ "$actual_harmony_vocab_sha256" != "$harmony_vocab_sha256" ]]; then
+    echo "GPT-OSS Harmony vocabulary checksum mismatch: $harmony_vocab" >&2
+    exit 2
+  fi
+fi
 
 unset VLLM_EXPERIMENTAL_ASYNC_NVFP4_KV
 unset VLLM_ASYNC_NVFP4_KV_USE_COMPRESSED
@@ -280,6 +303,7 @@ skip_n: $SKIP_N
 kv_algo: $VLLM_NVFP4_KV_QUANT_ALGO
 attention_backend: $ATTENTION_BACKEND
 force_trtllm_attention: $FORCE_TRTLLM_ATTENTION
+flashinfer_autotune: $FLASHINFER_AUTOTUNE
 cuda_graph: enabled_by_default_no_enforce_eager
 slurm_job_id: ${SLURM_JOB_ID:-manual}
 slurm_array_task_id: ${SLURM_ARRAY_TASK_ID:-0}
