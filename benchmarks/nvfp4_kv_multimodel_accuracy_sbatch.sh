@@ -2,7 +2,7 @@
 # Multi-model NVFP4 KV accuracy study. One allocation serves one model/cache
 # configuration and runs AIME25, GPQA, and LiveCodeBench sequentially.
 
-#SBATCH --time 12:00:00
+#SBATCH --time 04:00:00
 #SBATCH --account coreai_dlalgo_modelopt
 #SBATCH --partition batch
 #SBATCH --nodes 1
