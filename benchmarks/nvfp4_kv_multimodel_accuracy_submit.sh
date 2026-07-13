@@ -25,6 +25,13 @@ case "$MODE" in
     ;;
 esac
 
-job_id=$(sbatch --parsable --array "$array" --export "$export_args" "$SCRIPT")
+job_id=$(sbatch \
+  --parsable \
+  --array "$array" \
+  --chdir "$BASE" \
+  --output "$LOGROOT/slurm-%A_%a.out" \
+  --error "$LOGROOT/slurm-%A_%a.err" \
+  --export "$export_args" \
+  "$SCRIPT")
 printf '%s\n' "$job_id" | tee "$LOGROOT/.slurm_array_job_id"
 printf 'LOGROOT=%s\n' "$LOGROOT"
