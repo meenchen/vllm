@@ -7,6 +7,7 @@ SCRIPT=${SCRIPT:-benchmarks/nvfp4_kv_multimodel_accuracy_sbatch.sh}
 MODE=${MODE:-${1:-smoke}}
 STAMP=${STAMP:-$(date +%Y%m%d_%H%M%S)}
 LOGROOT=${LOGROOT:-$BASE/eval_rundirs/kv_study/multimodel/nvfp4_kv_${MODE}_$STAMP}
+SBATCH_COMMENT=${SBATCH_COMMENT:-'{"OccupiedIdleGPUsJobReaper":{"exemptIdleTimeMins":"240","reason":"benchmarking","description":"Multi-model KV accuracy evaluation"}}'}
 
 mkdir -p "$LOGROOT"
 
@@ -29,6 +30,7 @@ job_id=$(sbatch \
   --parsable \
   --array "$array" \
   --chdir "$BASE" \
+  --comment "$SBATCH_COMMENT" \
   --output "$LOGROOT/slurm-%A_%a.out" \
   --error "$LOGROOT/slurm-%A_%a.err" \
   --export "$export_args" \

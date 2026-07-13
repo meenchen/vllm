@@ -11,7 +11,7 @@
 #SBATCH --job-name nvfp4_kv_accuracy
 #SBATCH --exclusive
 #SBATCH --no-requeue
-#SBATCH --comment={"OccupiedIdleGPUsJobReaper":{"exemptIdleTimeMins":"720","reason":"benchmarking","description":"Multi-model KV accuracy evaluation"}}
+#SBATCH --comment='{"OccupiedIdleGPUsJobReaper":{"exemptIdleTimeMins":"240","reason":"benchmarking","description":"Multi-model KV accuracy evaluation"}}'
 
 set -euo pipefail
 
