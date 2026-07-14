@@ -64,6 +64,30 @@ def load_mapping(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def load_response_stats_cache(artifacts: Path) -> dict[str, Any]:
+    cache_path = artifacts / "response_stats_cache"
+    if not cache_path.exists():
+        return {}
+    try:
+        from diskcache import Cache
+
+        with Cache(str(cache_path)) as cache:
+            state = cache.get("interceptor_state")
+    except (ImportError, OSError):
+        return {}
+    if isinstance(state, bytes):
+        state = state.decode(errors="replace")
+    if isinstance(state, str):
+        try:
+            state = json.loads(state)
+        except json.JSONDecodeError:
+            return {}
+    if not isinstance(state, dict):
+        return {}
+    response = state.get("aggregated_stats", {})
+    return response if isinstance(response, dict) else {}
+
+
 def as_float(value: Any) -> float | None:
     try:
         return None if value is None else float(value)
@@ -138,6 +162,8 @@ def collect(root: Path) -> list[Result]:
                 results = load_mapping(artifacts / "results.yml")
                 metrics = load_mapping(artifacts / "eval_factory_metrics.json")
                 response = metrics.get("response_stats", {})
+                if not response:
+                    response = load_response_stats_cache(artifacts)
                 evaluation = metrics.get("evaluation", {})
                 finish_reason = response.get("finish_reason", {})
                 score, stderr = score_from_results(results)
