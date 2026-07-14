@@ -28,6 +28,7 @@ LIMIT_SAMPLES=${LIMIT_SAMPLES:-}
 NUM_REPEATS_OVERRIDE=${NUM_REPEATS_OVERRIDE:-}
 MAX_NEW_TOKENS_OVERRIDE=${MAX_NEW_TOKENS_OVERRIDE:-}
 JUDGE_MAX_CONCURRENT_REQUESTS=${JUDGE_MAX_CONCURRENT_REQUESTS:-32}
+SERVER_SEED=${SERVER_SEED:-0}
 SECRET_FILE=${SECRET_FILE:-$BASE/eval_rundirs/kv_study/qwen3_8b/nvfp4_kv_bnd_nightly/20260422_221445-abb0a9b26af0a22e/simple_evals.AIME_2025/.secrets.env}
 
 MODEL_KEYS=(
@@ -356,6 +357,7 @@ attention_backend: $ATTENTION_BACKEND
 force_trtllm_attention: $FORCE_TRTLLM_ATTENTION
 flashinfer_autotune: $FLASHINFER_AUTOTUNE
 cuda_graph: enabled_by_default_no_enforce_eager
+server_seed: $SERVER_SEED
 slurm_job_id: ${SLURM_JOB_ID:-manual}
 slurm_array_task_id: ${SLURM_ARRAY_TASK_ID:-0}
 matrix_file: ${MATRIX_FILE:-null}
@@ -383,6 +385,7 @@ server_cmd=(
   --dtype bfloat16
   --attention-backend "$ATTENTION_BACKEND"
   --max-cudagraph-capture-size 256
+  --seed "$SERVER_SEED"
   --compilation-config '{"pass_config":{"fuse_allreduce_rms":false}}'
 )
 server_cmd+=("${MODEL_EXTRA_ARGS[@]}")
