@@ -34,4 +34,4 @@ export HF_HUB_OFFLINE=0
 export TRANSFORMERS_OFFLINE=0
 mkdir -p "$HOME" "$HUGGINGFACE_HUB_CACHE"
 
-"$VENV/bin/huggingface-cli" download "$MODEL"
+"$VENV/bin/hf" download "$MODEL"
