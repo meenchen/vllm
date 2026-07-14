@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sqlite3
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -65,16 +66,18 @@ def load_mapping(path: Path) -> dict[str, Any]:
 
 
 def load_response_stats_cache(artifacts: Path) -> dict[str, Any]:
-    cache_path = artifacts / "response_stats_cache"
-    if not cache_path.exists():
+    cache_db = artifacts / "response_stats_cache" / "cache.db"
+    if not cache_db.exists():
         return {}
     try:
-        from diskcache import Cache
-
-        with Cache(str(cache_path)) as cache:
-            state = cache.get("interceptor_state")
-    except (ImportError, OSError):
+        uri = f"file:{cache_db.resolve()}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as connection:
+            row = connection.execute(
+                "SELECT value FROM Cache WHERE key = ?", ("interceptor_state",)
+            ).fetchone()
+    except (OSError, sqlite3.Error):
         return {}
+    state = row[0] if row else None
     if isinstance(state, bytes):
         state = state.decode(errors="replace")
     if isinstance(state, str):
