@@ -30,6 +30,11 @@ CASE_ORDER = (
     "fp8_k_nvfp4_v",
 )
 TASK_ORDER = ("aime25", "gpqa", "lcb")
+EXPECTED_SCORED_RESPONSES = {
+    "aime25": 30 * 64,
+    "gpqa": 198 * 64,
+    "lcb": 454 * 8,
+}
 
 
 @dataclass
@@ -259,14 +264,27 @@ def emit(root: Path, output_dir: Path) -> list[Result]:
     for row in rows:
         bf16 = row_map.get((row.model_key, "bf16", row.task))
         default = row_map.get((row.model_key, "default_nvfp4", row.task))
+        expected = EXPECTED_SCORED_RESPONSES[row.task]
+        successful_minus_expected = (
+            row.successful_count - expected
+            if row.successful_count is not None
+            else None
+        )
         token_rows.append(
             {
                 "model_key": row.model_key,
                 "model": row.model,
                 "case": row.case,
                 "task": row.task,
+                "expected_scored_responses": expected,
                 "count": row.count,
                 "successful_count": row.successful_count,
+                "successful_minus_expected": successful_minus_expected,
+                "extra_successful_responses": (
+                    max(successful_minus_expected, 0)
+                    if successful_minus_expected is not None
+                    else None
+                ),
                 "failed_attempts": (
                     row.count - row.successful_count
                     if row.count is not None and row.successful_count is not None
@@ -318,10 +336,12 @@ def emit(root: Path, output_dir: Path) -> list[Result]:
                 "model": model,
                 "case": case,
             }
+            complete = True
             for task in TASK_ORDER:
                 row = row_map.get((model_key, case, task))
                 bf16 = row_map.get((model_key, "bf16", task))
                 default = row_map.get((model_key, "default_nvfp4", task))
+                complete = complete and row is not None and row.status == "complete"
                 summary[f"{task}_accuracy_pct"] = (
                     100.0 * row.score if row and row.score is not None else None
                 )
@@ -333,6 +353,7 @@ def emit(root: Path, output_dir: Path) -> list[Result]:
                     row.score if row else None,
                     default.score if default else None,
                 )
+            summary["status"] = "complete" if complete else "incomplete"
             accuracy_rows.append(summary)
     accuracy_fields = list(accuracy_rows[0]) if accuracy_rows else ["model_key"]
     write_csv(output_dir / "accuracy_summary.csv", accuracy_rows, accuracy_fields)
