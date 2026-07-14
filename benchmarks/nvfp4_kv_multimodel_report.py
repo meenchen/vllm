@@ -251,6 +251,9 @@ def emit(root: Path, output_dir: Path) -> list[Result]:
     raw_rows = [asdict(row) for row in rows]
     raw_fields = list(Result.__dataclass_fields__)
     write_csv(output_dir / "raw_results.csv", raw_rows, raw_fields)
+    (output_dir / "raw_results.json").write_text(
+        json.dumps(raw_rows, indent=2) + "\n"
+    )
 
     token_rows: list[dict[str, Any]] = []
     for row in rows:
@@ -299,6 +302,9 @@ def emit(root: Path, output_dir: Path) -> list[Result]:
         )
     token_fields = list(token_rows[0]) if token_rows else ["model_key"]
     write_csv(output_dir / "token_usage.csv", token_rows, token_fields)
+    (output_dir / "token_usage.json").write_text(
+        json.dumps(token_rows, indent=2) + "\n"
+    )
 
     accuracy_rows: list[dict[str, Any]] = []
     for model_key in MODEL_ORDER:
@@ -330,6 +336,9 @@ def emit(root: Path, output_dir: Path) -> list[Result]:
             accuracy_rows.append(summary)
     accuracy_fields = list(accuracy_rows[0]) if accuracy_rows else ["model_key"]
     write_csv(output_dir / "accuracy_summary.csv", accuracy_rows, accuracy_fields)
+    (output_dir / "accuracy_summary.json").write_text(
+        json.dumps(accuracy_rows, indent=2) + "\n"
+    )
 
     manifest = {
         "root": str(root),
