@@ -110,6 +110,14 @@ def as_int(value: Any) -> int | None:
         return None
 
 
+def contains_text(path: Path, needle: str) -> bool:
+    try:
+        with path.open(errors="replace") as stream:
+            return any(needle in line for line in stream)
+    except OSError:
+        return False
+
+
 def normalize_score(value: Any) -> float | None:
     score = as_float(value)
     if score is None:
@@ -159,6 +167,10 @@ def collect(root: Path) -> list[Result]:
             if not case_dir.is_dir():
                 continue
             launcher = load_mapping(case_dir / "launcher_config.yaml")
+            case_cuda_graph = any(
+                contains_text(server_log, "Graph capturing finished")
+                for server_log in (case_dir / "logs").glob("server-*.log")
+            )
             slurm_ids = ""
             slurm_path = case_dir / ".slurm_job_id.list"
             if slurm_path.exists():
@@ -214,7 +226,10 @@ def collect(root: Path) -> list[Result]:
                         inference_seconds=as_float(response.get("inference_time")),
                         finish_stop=as_int(finish_reason.get("stop")),
                         finish_length=as_int(finish_reason.get("length")),
-                        cuda_graph="Graph capturing finished" in evidence,
+                        cuda_graph=(
+                            "Graph capturing finished" in evidence
+                            or case_cuda_graph
+                        ),
                         slurm_job_ids=slurm_ids,
                         status=status,
                     )
