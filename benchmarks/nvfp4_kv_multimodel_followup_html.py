@@ -68,6 +68,12 @@ def layer_policy(value: Any) -> str:
     return text(value, "all layers")
 
 
+def yes_no_unknown(value: Any) -> str:
+    if value is None:
+        return "-"
+    return "yes" if value else "no"
+
+
 def option_values(rows: list[dict[str, Any]], key: str) -> list[str]:
     return sorted(
         {text(row.get(key), "") for row in rows if row.get(key) not in (None, "")}
@@ -157,9 +163,40 @@ def render_run_rows(rows: list[dict[str, Any]]) -> str:
     return "\n".join(rendered)
 
 
+def render_performance_rows(rows: list[dict[str, Any]]) -> str:
+    rendered = []
+    for row in rows:
+        rendered.append(
+            "<tr>"
+            f"<td>{html.escape(text(row.get('workload')))}</td>"
+            f"<td>{html.escape(text(row.get('task')))}</td>"
+            f"<td>{html.escape(text(row.get('model')))}</td>"
+            f"<td>{html.escape(text(row.get('hardware')))}</td>"
+            f"<td class=case>{html.escape(text(row.get('kv_technique')))}</td>"
+            f"<td>{number(row.get('input_tokens'), 0)}</td>"
+            f"<td>{number(row.get('output_tokens'), 0)}</td>"
+            f"<td>{number(row.get('prompts_per_run'), 0)}</td>"
+            f"<td>{number(row.get('concurrency'), 0)}</td>"
+            f"<td>{number(row.get('runs'), 0)}</td>"
+            f"<td class=metric>{number(row.get('output_throughput'))}</td>"
+            f"<td>{number(row.get('total_token_throughput'))}</td>"
+            f"<td>{number(row.get('mean_ttft_ms'))}</td>"
+            f"<td>{number(row.get('median_tpot_ms'), 3)}</td>"
+            f"<td>{number(row.get('inference_seconds'))}</td>"
+            f"<td>{percent(row.get('accuracy_pct'))}</td>"
+            f"<td>{number(row.get('kv_capacity_tokens'), 0)}</td>"
+            f"<td>{yes_no_unknown(row.get('cuda_graph'))}</td>"
+            f"<td>{yes_no_unknown(row.get('torch_compile'))}</td>"
+            f"<td>{html.escape(text(row.get('source_notes')))}</td>"
+            "</tr>"
+        )
+    return "\n".join(rendered)
+
+
 def render(
     summary_rows: list[dict[str, Any]],
     run_rows: list[dict[str, Any]],
+    performance_rows: list[dict[str, Any]],
     title: str,
     sha: str,
     notes: list[str],
@@ -187,6 +224,26 @@ def render(
     note_items = "\n".join(f"<li>{html.escape(note)}</li>" for note in notes)
     if not note_items:
         note_items = "<li>No additional run notes.</li>"
+    performance_section = ""
+    if performance_rows:
+        performance_section = f"""
+    <h2>Performance</h2>
+    <p>Serving metrics are medians of three vLLM benchmark runs. End-to-end
+    evaluation rows are separate workloads and are not averaged with serving
+    measurements.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Workload</th><th>Task</th><th>Model</th><th>Hardware</th><th>KV path</th>
+          <th>Input</th><th>Output</th><th>Prompts</th><th>Concurrency</th><th>Runs</th>
+          <th>Output tok/s</th><th>Total tok/s</th><th>Mean TTFT ms</th><th>Median TPOT ms</th>
+          <th>Inference s</th><th>Accuracy</th><th>KV capacity</th><th>CUDA graph</th>
+          <th>torch.compile</th><th>Source / notes</th>
+        </tr></thead>
+        <tbody>{render_performance_rows(performance_rows)}</tbody>
+      </table>
+    </div>
+"""
 
     return f"""<!doctype html>
 <html lang="en">
@@ -289,6 +346,7 @@ def render(
       <div><span>Complete runs</span>{complete_runs}</div>
       <div><span>Incomplete diagnostics</span>{incomplete_runs}</div>
       <div><span>CUDA graph evidence</span>{cuda_graph_runs}/{complete_runs}</div>
+      <div><span>Performance rows</span>{len(performance_rows)}</div>
       <div><span>Branch SHA</span>{html.escape(sha or "unknown")}</div>
       <div><span>Generated</span>{html.escape(generated)}</div>
     </div>
@@ -317,6 +375,8 @@ def render(
         <tbody>{render_summary_rows(summary_rows)}</tbody>
       </table>
     </div>
+
+{performance_section}
 
     <details>
       <summary>Run-level audit ({len(run_rows)} rows)</summary>
@@ -360,6 +420,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--summary-json", type=Path, required=True)
     parser.add_argument("--runs-json", type=Path, required=True)
+    parser.add_argument("--performance-json", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--title", default="Multi-Model KV Cache Accuracy Study")
     parser.add_argument("--sha", default="")
@@ -371,9 +432,19 @@ def main() -> None:
     args = parse_args()
     summary_rows = load_rows(args.summary_json)
     run_rows = load_rows(args.runs_json)
+    performance_rows = (
+        load_rows(args.performance_json) if args.performance_json else []
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
-        render(summary_rows, run_rows, args.title, args.sha, args.note)
+        render(
+            summary_rows,
+            run_rows,
+            performance_rows,
+            args.title,
+            args.sha,
+            args.note,
+        )
     )
     print(args.output)
 
