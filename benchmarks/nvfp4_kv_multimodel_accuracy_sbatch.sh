@@ -27,6 +27,7 @@ GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
 LIMIT_SAMPLES=${LIMIT_SAMPLES:-}
 NUM_REPEATS_OVERRIDE=${NUM_REPEATS_OVERRIDE:-}
 MAX_NEW_TOKENS_OVERRIDE=${MAX_NEW_TOKENS_OVERRIDE:-}
+JUDGE_MAX_CONCURRENT_REQUESTS=${JUDGE_MAX_CONCURRENT_REQUESTS:-32}
 SECRET_FILE=${SECRET_FILE:-$BASE/eval_rundirs/kv_study/qwen3_8b/nvfp4_kv_bnd_nightly/20260422_221445-abb0a9b26af0a22e/simple_evals.AIME_2025/.secrets.env}
 
 MODEL_KEYS=(
@@ -545,7 +546,7 @@ ${custom_config}
       judge:
         api_key: JUDGE_API_KEY
         backend: openai
-        max_concurrent_requests: null
+        max_concurrent_requests: $JUDGE_MAX_CONCURRENT_REQUESTS
         max_retries: 16
         max_tokens: 1024
         model_id: null
