@@ -13,7 +13,11 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from nvfp4_kv_multimodel_report import Result, collect
+from nvfp4_kv_multimodel_report import (
+    EXPECTED_SCORED_RESPONSES,
+    Result,
+    collect,
+)
 
 
 def parse_run(value: str) -> tuple[str, Path]:
@@ -35,6 +39,23 @@ def finish_length_rate(row: Result) -> float | None:
     if row.finish_length is None or row.successful_count in (None, 0):
         return None
     return 100.0 * row.finish_length / row.successful_count
+
+
+def sum_optional(values: list[int | float | None]) -> int | float | None:
+    present = [value for value in values if value is not None]
+    return sum(present) if present else None
+
+
+def weighted_mean(group: list[tuple[str, Result]], attribute: str) -> float | None:
+    weighted_total = 0.0
+    total_weight = 0
+    for _, row in group:
+        value = getattr(row, attribute)
+        if value is None or row.successful_count is None:
+            continue
+        weighted_total += value * row.successful_count
+        total_weight += row.successful_count
+    return weighted_total / total_weight if total_weight else None
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -101,16 +122,6 @@ def emit(runs: list[tuple[str, Path]], output_dir: Path) -> None:
     summary_rows: list[dict[str, Any]] = []
     for key, group in grouped.items():
         scores = [row.score for _, row in group if row.score is not None]
-        completion = [
-            row.avg_completion_tokens
-            for _, row in group
-            if row.avg_completion_tokens is not None
-        ]
-        length_rates = [
-            rate
-            for _, row in group
-            if (rate := finish_length_rate(row)) is not None
-        ]
         model_key, model, case, task, max_model_len, max_new_tokens = key
         baseline = mean(
             baseline_scores.get(
@@ -119,15 +130,28 @@ def emit(runs: list[tuple[str, Path]], output_dir: Path) -> None:
         )
         score_mean = mean(scores)
         score_stdev = sample_stdev(scores)
+        successful_count = sum_optional(
+            [row.successful_count for _, row in group]
+        )
+        finish_length = sum_optional([row.finish_length for _, row in group])
         summary_rows.append(
             {
                 "model_key": model_key,
                 "model": model,
+                "weight_format": next(
+                    (
+                        row.weight_format
+                        for _, row in group
+                        if row.weight_format != "unknown"
+                    ),
+                    group[0][1].weight_format,
+                ),
                 "case": case,
                 "task": task,
                 "max_model_len": max_model_len,
                 "max_new_tokens": max_new_tokens,
-                "run_count": len(scores),
+                "run_count": len(group),
+                "scored_run_count": len(scores),
                 "runs": ", ".join(label for label, _ in group),
                 "accuracy_mean_pct": (
                     100.0 * score_mean if score_mean is not None else None
@@ -140,8 +164,40 @@ def emit(runs: list[tuple[str, Path]], output_dir: Path) -> None:
                     if score_mean is not None and baseline is not None
                     else None
                 ),
-                "avg_completion_tokens": mean(completion),
-                "finish_length_rate_pct": mean(length_rates),
+                "count": sum_optional([row.count for _, row in group]),
+                "successful_count": successful_count,
+                "expected_scored_responses": (
+                    EXPECTED_SCORED_RESPONSES[task] * len(group)
+                ),
+                "avg_prompt_tokens": weighted_mean(group, "avg_prompt_tokens"),
+                "avg_completion_tokens": weighted_mean(
+                    group, "avg_completion_tokens"
+                ),
+                "avg_total_tokens": weighted_mean(group, "avg_total_tokens"),
+                "total_prompt_tokens": sum_optional(
+                    [row.total_prompt_tokens for _, row in group]
+                ),
+                "total_completion_tokens": sum_optional(
+                    [row.total_completion_tokens for _, row in group]
+                ),
+                "total_tokens": sum_optional([row.total_tokens for _, row in group]),
+                "finish_stop": sum_optional([row.finish_stop for _, row in group]),
+                "finish_length": finish_length,
+                "finish_length_rate_pct": (
+                    100.0 * finish_length / successful_count
+                    if finish_length is not None and successful_count not in (None, 0)
+                    else None
+                ),
+                "runtime_seconds": sum_optional(
+                    [row.runtime_seconds for _, row in group]
+                ),
+                "inference_seconds": sum_optional(
+                    [row.inference_seconds for _, row in group]
+                ),
+                "cuda_graph": all(row.cuda_graph for _, row in group),
+                "slurm_job_ids": ", ".join(
+                    row.slurm_job_ids for _, row in group if row.slurm_job_ids
+                ),
                 "status": (
                     "complete"
                     if group and all(row.status == "complete" for _, row in group)
