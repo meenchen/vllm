@@ -216,14 +216,19 @@ def render(
     main {{ padding: 0 clamp(18px, 4vw, 48px) 44px; }}
     h1 {{ margin: 0 0 8px; font-size: 26px; letter-spacing: 0; }}
     h2 {{ margin: 28px 0 12px; font-size: 18px; letter-spacing: 0; }}
-    p {{ color: var(--muted); max-width: 980px; }}
+    p {{ color: var(--muted); max-width: 980px; overflow-wrap: anywhere; }}
     .meta {{
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
       gap: 14px;
       margin-top: 18px;
     }}
-    .meta div {{ border-left: 3px solid var(--accent); padding-left: 10px; }}
+    .meta div {{
+      min-width: 0;
+      border-left: 3px solid var(--accent);
+      padding-left: 10px;
+      overflow-wrap: anywhere;
+    }}
     .meta span {{ display: block; color: var(--muted); font-size: 12px; }}
     .filters {{
       display: grid;
@@ -232,7 +237,7 @@ def render(
       margin: 14px 0;
       max-width: 980px;
     }}
-    label {{ color: var(--muted); font-size: 12px; }}
+    label {{ min-width: 0; color: var(--muted); font-size: 12px; }}
     select {{
       display: block;
       width: 100%;
@@ -256,7 +261,7 @@ def render(
     .warn {{ color: var(--warn); font-weight: 650; }}
     .bad {{ color: var(--bad); font-weight: 700; }}
     ul {{ margin: 8px 0 0 18px; padding: 0; max-width: 1100px; }}
-    li {{ margin: 6px 0; }}
+    li {{ margin: 6px 0; overflow-wrap: anywhere; }}
     .count {{ color: var(--muted); font-size: 13px; }}
     details {{ margin-top: 20px; }}
     summary {{ cursor: pointer; font-weight: 650; }}
