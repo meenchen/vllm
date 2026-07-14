@@ -79,7 +79,11 @@ def emit(runs: list[tuple[str, Path]], output_dir: Path) -> None:
         tuple[str, str, int | None, int | None, str], list[float]
     ] = defaultdict(list)
     for _, row in tagged:
-        if row.case == "bf16" and row.score is not None:
+        if (
+            row.case == "bf16"
+            and row.status == "complete"
+            and row.score is not None
+        ):
             baseline_scores[
                 (
                     row.model_key,
