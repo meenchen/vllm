@@ -29,6 +29,7 @@ NUM_REPEATS_OVERRIDE=${NUM_REPEATS_OVERRIDE:-}
 MAX_NEW_TOKENS_OVERRIDE=${MAX_NEW_TOKENS_OVERRIDE:-}
 JUDGE_MAX_CONCURRENT_REQUESTS=${JUDGE_MAX_CONCURRENT_REQUESTS:-32}
 SERVER_SEED=${SERVER_SEED:-0}
+KV_CACHE_DTYPE_SKIP_LAYERS=
 SECRET_FILE=${SECRET_FILE:-$BASE/eval_rundirs/kv_study/qwen3_8b/nvfp4_kv_bnd_nightly/20260422_221445-abb0a9b26af0a22e/simple_evals.AIME_2025/.secrets.env}
 
 MODEL_KEYS=(
@@ -144,12 +145,16 @@ case "$MODEL_KEY" in
   gpt_oss_20b)
     MODEL=openai/gpt-oss-20b
     WEIGHT_FORMAT=mxfp4
+    KV_CACHE_DTYPE_SKIP_LAYERS=sliding_window
     TENSOR_PARALLEL_SIZE=4
     DATA_PARALLEL_SIZE=1
     MAX_MODEL_LEN=40960
     MAX_NEW_TOKENS=32768
     MAX_NUM_SEQS=256
     PARALLELISM=256
+    MODEL_EXTRA_ARGS+=(
+      --kv-cache-dtype-skip-layers "$KV_CACHE_DTYPE_SKIP_LAYERS"
+    )
     ;;
   *)
     echo "Unknown MODEL_KEY=$MODEL_KEY" >&2
@@ -358,6 +363,7 @@ force_trtllm_attention: $FORCE_TRTLLM_ATTENTION
 flashinfer_autotune: $FLASHINFER_AUTOTUNE
 cuda_graph: enabled_by_default_no_enforce_eager
 server_seed: $SERVER_SEED
+kv_cache_dtype_skip_layers: ${KV_CACHE_DTYPE_SKIP_LAYERS:-null}
 slurm_job_id: ${SLURM_JOB_ID:-manual}
 slurm_array_task_id: ${SLURM_ARRAY_TASK_ID:-0}
 matrix_file: ${MATRIX_FILE:-null}

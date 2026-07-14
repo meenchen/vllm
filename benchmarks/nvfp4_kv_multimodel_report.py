@@ -65,6 +65,7 @@ class Result:
     max_new_tokens: int | None
     num_repeats: int | None
     server_seed: int | None
+    kv_cache_dtype_skip_layers: str
     score: float | None
     stderr: float | None
     count: int | None
@@ -240,6 +241,9 @@ def collect(root: Path) -> list[Result]:
                         max_new_tokens=as_int(task_config.get("max_new_tokens")),
                         num_repeats=as_int(task_config.get("num_repeats")),
                         server_seed=as_int(launcher.get("server_seed")),
+                        kv_cache_dtype_skip_layers=str(
+                            launcher.get("kv_cache_dtype_skip_layers", "") or ""
+                        ),
                         score=score,
                         stderr=stderr,
                         count=count,
