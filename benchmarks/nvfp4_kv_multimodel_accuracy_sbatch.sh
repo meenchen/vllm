@@ -33,7 +33,9 @@ SECRET_FILE=${SECRET_FILE:-$BASE/eval_rundirs/kv_study/qwen3_8b/nvfp4_kv_bnd_nig
 MODEL_KEYS=(
   qwen36_35b_a3b
   nemotron3_nano_30b_a3b_nvfp4
+  nemotron3_nano_30b_a3b_bf16
   nemotron3_super_120b_a12b_nvfp4
+  nemotron3_super_120b_a12b_bf16
   gpt_oss_20b
 )
 CASES=(
@@ -57,6 +59,8 @@ if [[ -z "${MODEL_KEY:-}" ]]; then
     MODEL_KEY=${MODEL_KEYS[$model_index]}
     CASE=${CASES[$case_index]}
   fi
+elif [[ -z "${CASE:-}" && "$RUN_MODE" == "full" ]]; then
+  CASE=${CASES[$array_index]}
 fi
 CASE=${CASE:-default_nvfp4}
 
@@ -65,18 +69,37 @@ FLASHINFER_AUTOTUNE=enabled
 case "$MODEL_KEY" in
   qwen36_35b_a3b)
     MODEL=Qwen/Qwen3.6-35B-A3B
+    WEIGHT_FORMAT=bf16
     TENSOR_PARALLEL_SIZE=4
     DATA_PARALLEL_SIZE=1
     MAX_MODEL_LEN=40960
+    MAX_NEW_TOKENS=32768
     MAX_NUM_SEQS=256
     PARALLELISM=256
     MODEL_EXTRA_ARGS+=(--language-model-only)
     ;;
   nemotron3_nano_30b_a3b_nvfp4)
     MODEL=nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+    WEIGHT_FORMAT=nvfp4
     TENSOR_PARALLEL_SIZE=1
     DATA_PARALLEL_SIZE=4
-    MAX_MODEL_LEN=40960
+    MAX_MODEL_LEN=131072
+    MAX_NEW_TOKENS=65536
+    MAX_NUM_SEQS=128
+    PARALLELISM=256
+    MODEL_EXTRA_ARGS+=(
+      --mamba-ssm-cache-dtype float32
+      --no-enable-flashinfer-autotune
+    )
+    FLASHINFER_AUTOTUNE=disabled_nightly_0.6.12_gb200_segfault
+    ;;
+  nemotron3_nano_30b_a3b_bf16)
+    MODEL=nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+    WEIGHT_FORMAT=bf16
+    TENSOR_PARALLEL_SIZE=1
+    DATA_PARALLEL_SIZE=4
+    MAX_MODEL_LEN=131072
+    MAX_NEW_TOKENS=65536
     MAX_NUM_SEQS=128
     PARALLELISM=256
     MODEL_EXTRA_ARGS+=(
@@ -87,9 +110,23 @@ case "$MODEL_KEY" in
     ;;
   nemotron3_super_120b_a12b_nvfp4)
     MODEL=nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+    WEIGHT_FORMAT=nvfp4
     TENSOR_PARALLEL_SIZE=4
     DATA_PARALLEL_SIZE=1
     MAX_MODEL_LEN=40960
+    MAX_NEW_TOKENS=32768
+    MAX_NUM_SEQS=128
+    PARALLELISM=128
+    MODEL_EXTRA_ARGS+=(--no-enable-flashinfer-autotune)
+    FLASHINFER_AUTOTUNE=disabled_nightly_0.6.12_gb200_segfault
+    ;;
+  nemotron3_super_120b_a12b_bf16)
+    MODEL=nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
+    WEIGHT_FORMAT=bf16
+    TENSOR_PARALLEL_SIZE=4
+    DATA_PARALLEL_SIZE=1
+    MAX_MODEL_LEN=40960
+    MAX_NEW_TOKENS=32768
     MAX_NUM_SEQS=128
     PARALLELISM=128
     MODEL_EXTRA_ARGS+=(--no-enable-flashinfer-autotune)
@@ -97,9 +134,11 @@ case "$MODEL_KEY" in
     ;;
   gpt_oss_20b)
     MODEL=openai/gpt-oss-20b
+    WEIGHT_FORMAT=mxfp4
     TENSOR_PARALLEL_SIZE=4
     DATA_PARALLEL_SIZE=1
     MAX_MODEL_LEN=40960
+    MAX_NEW_TOKENS=32768
     MAX_NUM_SEQS=256
     PARALLELISM=256
     ;;
@@ -111,6 +150,7 @@ esac
 
 SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-$MODEL}
 MAX_MODEL_LEN=${MAX_MODEL_LEN_OVERRIDE:-$MAX_MODEL_LEN}
+MAX_NEW_TOKENS=${MAX_NEW_TOKENS_OVERRIDE:-$MAX_NEW_TOKENS}
 MAX_NUM_SEQS=${MAX_NUM_SEQS_OVERRIDE:-$MAX_NUM_SEQS}
 PARALLELISM=${PARALLELISM_OVERRIDE:-$PARALLELISM}
 LOGROOT=${LOGROOT:-$BASE/eval_rundirs/kv_study/multimodel/nvfp4_kv_$(date +%Y%m%d_%H%M%S)}
@@ -293,10 +333,12 @@ cat > "$RUN_DIR/launcher_config.yaml" <<EOF
 run_mode: $RUN_MODE
 model_key: $MODEL_KEY
 model: $MODEL
+weight_format: $WEIGHT_FORMAT
 case: $CASE
 tensor_parallel_size: $TENSOR_PARALLEL_SIZE
 data_parallel_size: $DATA_PARALLEL_SIZE
 max_model_len: $MAX_MODEL_LEN
+max_new_tokens: $MAX_NEW_TOKENS
 max_num_seqs: $MAX_NUM_SEQS
 parallelism: $PARALLELISM
 tasks: $TASKS
@@ -438,7 +480,7 @@ run_task() {
   if [[ -n "$NUM_REPEATS_OVERRIDE" ]]; then
     repeats=$NUM_REPEATS_OVERRIDE
   fi
-  local max_new_tokens=${MAX_NEW_TOKENS_OVERRIDE:-32768}
+  local max_new_tokens=$MAX_NEW_TOKENS
   task_dir=$RUN_DIR/$task
   mkdir -p "$task_dir/artifacts" "$task_dir/logs"
 
@@ -450,6 +492,7 @@ run_task() {
   cat > "$task_dir/artifacts/task_config.yaml" <<EOF
 model_key: $MODEL_KEY
 model: $MODEL
+weight_format: $WEIGHT_FORMAT
 case: $CASE
 task: $task
 eval_kind: $eval_kind

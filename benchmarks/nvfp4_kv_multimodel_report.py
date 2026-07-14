@@ -17,7 +17,9 @@ import yaml
 MODEL_ORDER = (
     "qwen36_35b_a3b",
     "nemotron3_nano_30b_a3b_nvfp4",
+    "nemotron3_nano_30b_a3b_bf16",
     "nemotron3_super_120b_a12b_nvfp4",
+    "nemotron3_super_120b_a12b_bf16",
     "gpt_oss_20b",
 )
 CASE_ORDER = (
@@ -41,8 +43,11 @@ EXPECTED_SCORED_RESPONSES = {
 class Result:
     model_key: str
     model: str
+    weight_format: str
     case: str
     task: str
+    max_model_len: int | None
+    max_new_tokens: int | None
     score: float | None
     stderr: float | None
     count: int | None
@@ -179,6 +184,7 @@ def collect(root: Path) -> list[Result]:
                 if not task_dir.is_dir() or task_dir.name == "logs":
                     continue
                 artifacts = task_dir / "artifacts"
+                task_config = load_mapping(artifacts / "task_config.yaml")
                 results = load_mapping(artifacts / "results.yml")
                 metrics = load_mapping(artifacts / "eval_factory_metrics.json")
                 response = metrics.get("response_stats", {})
@@ -210,8 +216,11 @@ def collect(root: Path) -> list[Result]:
                     Result(
                         model_key=model_dir.name,
                         model=str(launcher.get("model", model_dir.name)),
+                        weight_format=str(launcher.get("weight_format", "unknown")),
                         case=case_dir.name,
                         task=task_dir.name,
+                        max_model_len=as_int(launcher.get("max_model_len")),
+                        max_new_tokens=as_int(task_config.get("max_new_tokens")),
                         score=score,
                         stderr=stderr,
                         count=count,
@@ -289,8 +298,11 @@ def emit(root: Path, output_dir: Path) -> list[Result]:
             {
                 "model_key": row.model_key,
                 "model": row.model,
+                "weight_format": row.weight_format,
                 "case": row.case,
                 "task": row.task,
+                "max_model_len": row.max_model_len,
+                "max_new_tokens": row.max_new_tokens,
                 "expected_scored_responses": expected,
                 "count": row.count,
                 "successful_count": row.successful_count,
@@ -330,6 +342,12 @@ def emit(root: Path, output_dir: Path) -> list[Result]:
                 "total_tokens": row.total_tokens,
                 "finish_stop": row.finish_stop,
                 "finish_length": row.finish_length,
+                "finish_length_rate_pct": (
+                    100.0 * row.finish_length / row.successful_count
+                    if row.successful_count not in (None, 0)
+                    and row.finish_length is not None
+                    else None
+                ),
                 "status": row.status,
             }
         )
@@ -340,7 +358,12 @@ def emit(root: Path, output_dir: Path) -> list[Result]:
     )
 
     accuracy_rows: list[dict[str, Any]] = []
-    for model_key in MODEL_ORDER:
+    present_models = [
+        model_key
+        for model_key in MODEL_ORDER
+        if any(row.model_key == model_key for row in rows)
+    ]
+    for model_key in present_models:
         model_rows = [row for row in rows if row.model_key == model_key]
         if not model_rows:
             continue
@@ -349,6 +372,7 @@ def emit(root: Path, output_dir: Path) -> list[Result]:
             summary: dict[str, Any] = {
                 "model_key": model_key,
                 "model": model,
+                "weight_format": model_rows[0].weight_format,
                 "case": case,
             }
             complete = True
@@ -378,10 +402,10 @@ def emit(root: Path, output_dir: Path) -> list[Result]:
 
     manifest = {
         "root": str(root),
-        "models": list(MODEL_ORDER),
+        "models": present_models,
         "cases": list(CASE_ORDER),
         "tasks": list(TASK_ORDER),
-        "expected_rows": len(MODEL_ORDER) * len(CASE_ORDER) * len(TASK_ORDER),
+        "expected_rows": len(present_models) * len(CASE_ORDER) * len(TASK_ORDER),
         "collected_rows": len(rows),
         "complete_rows": sum(row.status == "complete" for row in rows),
     }

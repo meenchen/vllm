@@ -18,7 +18,7 @@ case "$MODE" in
     export_args=ALL,RUN_MODE=smoke,LOGROOT=$LOGROOT,TASKS=aime25,LIMIT_SAMPLES=1,NUM_REPEATS_OVERRIDE=1,MAX_NEW_TOKENS_OVERRIDE=128,HF_HUB_OFFLINE=0,TRANSFORMERS_OFFLINE=0
     ;;
   full)
-    array=${ARRAY:-0-27%4}
+    array=${ARRAY:-0-41%4}
     export_args=ALL,RUN_MODE=full,LOGROOT=$LOGROOT,HF_HUB_OFFLINE=1,TRANSFORMERS_OFFLINE=1
     if [[ -n "${TASKS:-}" ]]; then
       export_args=$export_args,TASKS=$TASKS
@@ -41,4 +41,5 @@ job_id=$(sbatch \
   --export "$export_args" \
   "$SCRIPT")
 printf '%s\n' "$job_id" | tee "$LOGROOT/.slurm_array_job_id"
+printf '%s\n' "$job_id" >> "$LOGROOT/.slurm_array_job_id.list"
 printf 'LOGROOT=%s\n' "$LOGROOT"
