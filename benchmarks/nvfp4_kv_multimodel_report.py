@@ -142,6 +142,8 @@ def collect(root: Path) -> list[Result]:
                 finish_reason = response.get("finish_reason", {})
                 score, stderr = score_from_results(results)
                 count = as_int(response.get("count"))
+                successful_count = as_int(response.get("successful_count"))
+                token_count = successful_count if successful_count is not None else count
                 prompt = as_float(response.get("avg_prompt_tokens"))
                 completion = as_float(response.get("avg_completion_tokens"))
                 total = as_float(response.get("avg_total_tokens"))
@@ -167,13 +169,13 @@ def collect(root: Path) -> list[Result]:
                         score=score,
                         stderr=stderr,
                         count=count,
-                        successful_count=as_int(response.get("successful_count")),
+                        successful_count=successful_count,
                         avg_prompt_tokens=prompt,
                         avg_completion_tokens=completion,
                         avg_total_tokens=total,
-                        total_prompt_tokens=multiply(prompt, count),
-                        total_completion_tokens=multiply(completion, count),
-                        total_tokens=multiply(total, count),
+                        total_prompt_tokens=multiply(prompt, token_count),
+                        total_completion_tokens=multiply(completion, token_count),
+                        total_tokens=multiply(total, token_count),
                         runtime_seconds=as_float(evaluation.get("runtime_seconds")),
                         inference_seconds=as_float(response.get("inference_time")),
                         finish_stop=as_int(finish_reason.get("stop")),
@@ -232,6 +234,17 @@ def emit(root: Path, output_dir: Path) -> list[Result]:
                 "case": row.case,
                 "task": row.task,
                 "count": row.count,
+                "successful_count": row.successful_count,
+                "failed_attempts": (
+                    row.count - row.successful_count
+                    if row.count is not None and row.successful_count is not None
+                    else None
+                ),
+                "success_rate_pct": (
+                    100.0 * row.successful_count / row.count
+                    if row.count not in (None, 0) and row.successful_count is not None
+                    else None
+                ),
                 "avg_prompt_tokens": row.avg_prompt_tokens,
                 "avg_completion_tokens": row.avg_completion_tokens,
                 "avg_total_tokens": row.avg_total_tokens,
