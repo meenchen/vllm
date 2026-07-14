@@ -49,6 +49,14 @@ CASES=(
 )
 
 array_index=${SLURM_ARRAY_TASK_ID:-0}
+if [[ -n "${MATRIX_FILE:-}" ]]; then
+  matrix_line=$(sed -n "$((array_index + 1))p" "$MATRIX_FILE")
+  if [[ -z "$matrix_line" ]]; then
+    echo "No matrix entry for array index $array_index in $MATRIX_FILE" >&2
+    exit 2
+  fi
+  IFS=$'\t' read -r MODEL_KEY CASE TASKS LOGROOT <<< "$matrix_line"
+fi
 if [[ -z "${MODEL_KEY:-}" ]]; then
   if [[ "$RUN_MODE" == "smoke" ]]; then
     MODEL_KEY=${MODEL_KEYS[$array_index]}
@@ -350,6 +358,7 @@ flashinfer_autotune: $FLASHINFER_AUTOTUNE
 cuda_graph: enabled_by_default_no_enforce_eager
 slurm_job_id: ${SLURM_JOB_ID:-manual}
 slurm_array_task_id: ${SLURM_ARRAY_TASK_ID:-0}
+matrix_file: ${MATRIX_FILE:-null}
 EOF
 
 cleanup() {
