@@ -32,11 +32,26 @@ CASE_ORDER = (
     "fp8_k_nvfp4_v",
 )
 TASK_ORDER = ("aime25", "gpqa", "lcb")
-EXPECTED_SCORED_RESPONSES = {
-    "aime25": 30 * 64,
-    "gpqa": 198 * 64,
-    "lcb": 454 * 8,
+TASK_SAMPLE_COUNTS = {
+    "aime25": 30,
+    "gpqa": 198,
+    "lcb": 454,
 }
+DEFAULT_NUM_REPEATS = {
+    "aime25": 64,
+    "gpqa": 64,
+    "lcb": 8,
+}
+EXPECTED_SCORED_RESPONSES = {
+    task: TASK_SAMPLE_COUNTS[task] * repeats
+    for task, repeats in DEFAULT_NUM_REPEATS.items()
+}
+
+
+def expected_scored_responses(task: str, num_repeats: int | None) -> int:
+    if num_repeats is None:
+        return EXPECTED_SCORED_RESPONSES[task]
+    return TASK_SAMPLE_COUNTS[task] * num_repeats
 
 
 @dataclass
@@ -48,6 +63,7 @@ class Result:
     task: str
     max_model_len: int | None
     max_new_tokens: int | None
+    num_repeats: int | None
     score: float | None
     stderr: float | None
     count: int | None
@@ -221,6 +237,7 @@ def collect(root: Path) -> list[Result]:
                         task=task_dir.name,
                         max_model_len=as_int(launcher.get("max_model_len")),
                         max_new_tokens=as_int(task_config.get("max_new_tokens")),
+                        num_repeats=as_int(task_config.get("num_repeats")),
                         score=score,
                         stderr=stderr,
                         count=count,
@@ -288,7 +305,7 @@ def emit(root: Path, output_dir: Path) -> list[Result]:
     for row in rows:
         bf16 = row_map.get((row.model_key, "bf16", row.task))
         default = row_map.get((row.model_key, "default_nvfp4", row.task))
-        expected = EXPECTED_SCORED_RESPONSES[row.task]
+        expected = expected_scored_responses(row.task, row.num_repeats)
         successful_minus_expected = (
             row.successful_count - expected
             if row.successful_count is not None

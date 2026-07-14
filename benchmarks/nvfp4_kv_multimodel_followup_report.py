@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Any
 
 from nvfp4_kv_multimodel_report import (
-    EXPECTED_SCORED_RESPONSES,
     Result,
     collect,
+    expected_scored_responses,
 )
 
 
@@ -166,8 +166,9 @@ def emit(runs: list[tuple[str, Path]], output_dir: Path) -> None:
                 ),
                 "count": sum_optional([row.count for _, row in group]),
                 "successful_count": successful_count,
-                "expected_scored_responses": (
-                    EXPECTED_SCORED_RESPONSES[task] * len(group)
+                "expected_scored_responses": sum(
+                    expected_scored_responses(row.task, row.num_repeats)
+                    for _, row in group
                 ),
                 "avg_prompt_tokens": weighted_mean(group, "avg_prompt_tokens"),
                 "avg_completion_tokens": weighted_mean(
