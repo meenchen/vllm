@@ -8,6 +8,7 @@ MODE=${MODE:-${1:-smoke}}
 STAMP=${STAMP:-$(date +%Y%m%d_%H%M%S)}
 LOGROOT=${LOGROOT:-$BASE/eval_rundirs/kv_study/multimodel/nvfp4_kv_${MODE}_$STAMP}
 SBATCH_COMMENT=${SBATCH_COMMENT:-'{"OccupiedIdleGPUsJobReaper":{"exemptIdleTimeMins":"240","reason":"benchmarking","description":"Multi-model KV accuracy evaluation"}}'}
+SBATCH_TIME=${SBATCH_TIME:-04:00:00}
 
 mkdir -p "$LOGROOT"
 
@@ -19,6 +20,9 @@ case "$MODE" in
   full)
     array=${ARRAY:-0-27%4}
     export_args=ALL,RUN_MODE=full,LOGROOT=$LOGROOT,HF_HUB_OFFLINE=1,TRANSFORMERS_OFFLINE=1
+    if [[ -n "${TASKS:-}" ]]; then
+      export_args=$export_args,TASKS=$TASKS
+    fi
     ;;
   *)
     echo "MODE must be smoke or full" >&2
@@ -29,6 +33,7 @@ esac
 job_id=$(sbatch \
   --parsable \
   --array "$array" \
+  --time "$SBATCH_TIME" \
   --chdir "$BASE" \
   --comment "$SBATCH_COMMENT" \
   --output "$LOGROOT/slurm-%A_%a.out" \
