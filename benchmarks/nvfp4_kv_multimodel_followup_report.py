@@ -108,6 +108,8 @@ def emit(runs: list[tuple[str, Path]], output_dir: Path) -> None:
 
     grouped: dict[tuple[Any, ...], list[tuple[str, Result]]] = defaultdict(list)
     for label, row in tagged:
+        if row.status != "complete":
+            continue
         grouped[
             (
                 row.model_key,
