@@ -64,6 +64,7 @@ class Result:
     max_model_len: int | None
     max_new_tokens: int | None
     num_repeats: int | None
+    server_seed: int | None
     score: float | None
     stderr: float | None
     count: int | None
@@ -238,6 +239,7 @@ def collect(root: Path) -> list[Result]:
                         max_model_len=as_int(launcher.get("max_model_len")),
                         max_new_tokens=as_int(task_config.get("max_new_tokens")),
                         num_repeats=as_int(task_config.get("num_repeats")),
+                        server_seed=as_int(launcher.get("server_seed")),
                         score=score,
                         stderr=stderr,
                         count=count,
