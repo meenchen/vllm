@@ -265,6 +265,12 @@ def render(
     .count {{ color: var(--muted); font-size: 13px; }}
     details {{ margin-top: 20px; }}
     summary {{ cursor: pointer; font-weight: 650; }}
+    @media (max-width: 600px) {{
+      header {{ padding: 20px 16px; }}
+      main {{ padding: 0 16px 36px; }}
+      h1 {{ font-size: 24px; }}
+      .meta, .filters {{ grid-template-columns: 1fr; }}
+    }}
   </style>
 </head>
 <body>
