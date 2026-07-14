@@ -105,15 +105,18 @@ def render_summary_rows(rows: list[dict[str, Any]]) -> str:
         case = text(row.get("case"))
         task = text(row.get("task"))
         context = context_label(row.get("max_model_len"))
+        output = context_label(row.get("max_new_tokens"))
         rendered.append(
             "<tr "
             f'data-model="{html.escape(model_label)}" '
             f'data-task="{html.escape(task)}" '
             f'data-context="{html.escape(context)}" '
+            f'data-output="{html.escape(output)}" '
             f'data-policy="{html.escape(skip_layers)}">'
             f"<td>{html.escape(model_label)}</td>"
             f"<td>{html.escape(text(row.get('weight_format')))}</td>"
             f"<td>{html.escape(context)}</td>"
+            f"<td>{html.escape(output)}</td>"
             f"<td>{html.escape(skip_layers)}</td>"
             f"<td class=case>{html.escape(CASE_LABELS.get(case, case))}</td>"
             f"<td>{html.escape(task.upper())}</td>"
@@ -140,6 +143,7 @@ def render_run_rows(rows: list[dict[str, Any]]) -> str:
             f"<td>{html.escape(CASE_LABELS.get(text(row.get('case')), text(row.get('case'))))}</td>"
             f"<td>{html.escape(text(row.get('task')).upper())}</td>"
             f"<td>{html.escape(context_label(row.get('max_model_len')))}</td>"
+            f"<td>{html.escape(context_label(row.get('max_new_tokens')))}</td>"
             f"<td>{html.escape(skip_layers)}</td>"
             f"<td>{number(row.get('server_seed'), 0)}</td>"
             f"<td>{number(row.get('successful_count'), 0)}</td>"
@@ -171,6 +175,7 @@ def render(
     model_options = option_html(option_values(summary_rows, "model_key"))
     task_options = option_html(option_values(summary_rows, "task"))
     contexts = sorted({context_label(row.get("max_model_len")) for row in summary_rows})
+    outputs = sorted({context_label(row.get("max_new_tokens")) for row in summary_rows})
     policy_options = option_html(
         sorted(
             {
@@ -297,13 +302,14 @@ def render(
       <label>Model<select id="model"><option value="">All models</option>{model_options}</select></label>
       <label>Task<select id="task"><option value="">All tasks</option>{task_options}</select></label>
       <label>Context<select id="context"><option value="">All contexts</option>{option_html(contexts)}</select></label>
+      <label>Max output<select id="output"><option value="">All output caps</option>{option_html(outputs)}</select></label>
       <label>Layer policy<select id="policy"><option value="">All policies</option>{policy_options}</select></label>
     </div>
     <p class="count" id="visible-count"></p>
     <div class="table-wrap">
       <table id="summary-table">
         <thead><tr>
-          <th>Model</th><th>Weights</th><th>Context</th><th>Layer policy</th>
+          <th>Model</th><th>Weights</th><th>Context</th><th>Max output</th><th>Layer policy</th>
           <th>KV case</th><th>Task</th><th>Runs</th><th>Accuracy</th>
           <th>Delta vs BF16</th><th>Stdev pp</th><th>Avg completion tokens</th>
           <th>Length stop rate</th><th>CUDA graph</th>
@@ -317,7 +323,7 @@ def render(
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th>Run</th><th>Model</th><th>KV case</th><th>Task</th><th>Context</th>
+            <th>Run</th><th>Model</th><th>KV case</th><th>Task</th><th>Context</th><th>Max output</th>
             <th>Layer policy</th><th>Seed</th><th>Responses</th><th>Accuracy</th>
             <th>Avg completion tokens</th><th>Length stop rate</th>
             <th>CUDA graph</th><th>Status</th>
@@ -328,7 +334,7 @@ def render(
     </details>
   </main>
   <script>
-    const controls = ["model", "task", "context", "policy"];
+    const controls = ["model", "task", "context", "output", "policy"];
     const rows = [...document.querySelectorAll("#summary-table tbody tr")];
     function filterRows() {{
       const selected = Object.fromEntries(
