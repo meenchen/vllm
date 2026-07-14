@@ -75,20 +75,32 @@ def emit(runs: list[tuple[str, Path]], output_dir: Path) -> None:
     for label, root in runs:
         tagged.extend((label, row) for row in collect(root))
 
-    baseline_scores: dict[tuple[str, str, int | None, int | None], list[float]] = (
-        defaultdict(list)
-    )
+    baseline_scores: dict[
+        tuple[str, str, int | None, int | None, str], list[float]
+    ] = defaultdict(list)
     for _, row in tagged:
         if row.case == "bf16" and row.score is not None:
             baseline_scores[
-                (row.model_key, row.task, row.max_model_len, row.max_new_tokens)
+                (
+                    row.model_key,
+                    row.task,
+                    row.max_model_len,
+                    row.max_new_tokens,
+                    row.kv_cache_dtype_skip_layers,
+                )
             ].append(row.score)
 
     run_rows: list[dict[str, Any]] = []
     for label, row in tagged:
         baseline = mean(
             baseline_scores.get(
-                (row.model_key, row.task, row.max_model_len, row.max_new_tokens),
+                (
+                    row.model_key,
+                    row.task,
+                    row.max_model_len,
+                    row.max_new_tokens,
+                    row.kv_cache_dtype_skip_layers,
+                ),
                 [],
             )
         )
@@ -118,16 +130,32 @@ def emit(runs: list[tuple[str, Path]], output_dir: Path) -> None:
                 row.task,
                 row.max_model_len,
                 row.max_new_tokens,
+                row.kv_cache_dtype_skip_layers,
             )
         ].append((label, row))
 
     summary_rows: list[dict[str, Any]] = []
     for key, group in grouped.items():
         scores = [row.score for _, row in group if row.score is not None]
-        model_key, model, case, task, max_model_len, max_new_tokens = key
+        (
+            model_key,
+            model,
+            case,
+            task,
+            max_model_len,
+            max_new_tokens,
+            kv_cache_dtype_skip_layers,
+        ) = key
         baseline = mean(
             baseline_scores.get(
-                (model_key, task, max_model_len, max_new_tokens), []
+                (
+                    model_key,
+                    task,
+                    max_model_len,
+                    max_new_tokens,
+                    kv_cache_dtype_skip_layers,
+                ),
+                [],
             )
         )
         score_mean = mean(scores)
@@ -152,6 +180,7 @@ def emit(runs: list[tuple[str, Path]], output_dir: Path) -> None:
                 "task": task,
                 "max_model_len": max_model_len,
                 "max_new_tokens": max_new_tokens,
+                "kv_cache_dtype_skip_layers": kv_cache_dtype_skip_layers,
                 "run_count": len(group),
                 "scored_run_count": len(scores),
                 "runs": ", ".join(label for label, _ in group),
