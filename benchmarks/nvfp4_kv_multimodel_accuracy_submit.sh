@@ -14,11 +14,11 @@ mkdir -p "$LOGROOT"
 
 case "$MODE" in
   smoke)
-    array=${ARRAY:-0-3%1}
+    array=${ARRAY:-0-5%1}
     export_args=ALL,RUN_MODE=smoke,LOGROOT=$LOGROOT,TASKS=aime25,LIMIT_SAMPLES=1,NUM_REPEATS_OVERRIDE=1,MAX_NEW_TOKENS_OVERRIDE=128,HF_HUB_OFFLINE=0,TRANSFORMERS_OFFLINE=0
     ;;
   full)
-    array=${ARRAY:-0-41%4}
+    array=${ARRAY:-0-53%4}
     export_args=ALL,RUN_MODE=full,LOGROOT=$LOGROOT,HF_HUB_OFFLINE=1,TRANSFORMERS_OFFLINE=1
     if [[ -n "${TASKS:-}" ]]; then
       export_args=$export_args,TASKS=$TASKS
