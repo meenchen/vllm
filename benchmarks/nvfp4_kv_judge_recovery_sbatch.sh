@@ -20,16 +20,20 @@ SECRET_FILE=${SECRET_FILE:-$BASE/eval_rundirs/kv_study/qwen3_8b/nvfp4_kv_bnd_nig
 JUDGE_CONCURRENCY=${JUDGE_CONCURRENCY:-4}
 JUDGE_RETRIES=${JUDGE_RETRIES:-32}
 
-if [[ -z "${MATRIX_FILE:-}" ]]; then
-  echo "MATRIX_FILE is required" >&2
-  exit 2
+if [[ -n "${TASK_DIR:-}" ]]; then
+  task_dir=$TASK_DIR
+else
+  if [[ -z "${MATRIX_FILE:-}" || -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
+    echo "Set TASK_DIR or submit an array with MATRIX_FILE" >&2
+    exit 2
+  fi
+  matrix_line=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$MATRIX_FILE")
+  if [[ -z "$matrix_line" ]]; then
+    echo "No matrix entry for array index $SLURM_ARRAY_TASK_ID" >&2
+    exit 2
+  fi
+  IFS=$'\t' read -r task_dir <<< "$matrix_line"
 fi
-matrix_line=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$MATRIX_FILE")
-if [[ -z "$matrix_line" ]]; then
-  echo "No matrix entry for array index $SLURM_ARRAY_TASK_ID" >&2
-  exit 2
-fi
-IFS=$'\t' read -r task_dir <<< "$matrix_line"
 if [[ ! -f "$task_dir/artifacts/config_ef.yaml" ]]; then
   echo "Missing evaluator config under $task_dir" >&2
   exit 2
