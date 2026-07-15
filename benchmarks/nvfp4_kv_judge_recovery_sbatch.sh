@@ -47,10 +47,32 @@ recovery_config=$task_dir/artifacts/config_ef.recovery.yaml
   --judge-retries "$JUDGE_RETRIES"
 
 if [[ -f "$SECRET_FILE" ]]; then
-  set -a
   # shellcheck disable=SC1090
   source "$SECRET_FILE"
-  set +a
+fi
+
+export_from_scoped_secret() {
+  local dst=$1
+  local src
+  if [[ -n "${!dst:-}" ]]; then
+    export "$dst"
+    return
+  fi
+  src=$(compgen -A variable | grep -E "^${dst}_[[:alnum:]]+_" | head -n 1 || true)
+  if [[ -n "$src" ]]; then
+    export "$dst=${!src}"
+  fi
+}
+
+export_from_scoped_secret HF_TOKEN
+export_from_scoped_secret HUGGING_FACE_HUB_TOKEN
+export_from_scoped_secret DUMMY_API_KEY
+export_from_scoped_secret JUDGE_API_KEY
+export_from_scoped_secret NEMO_EVALUATOR_TELEMETRY_LEVEL
+export_from_scoped_secret NEMO_EVALUATOR_TELEMETRY_SESSION_ID
+if [[ -z "${JUDGE_API_KEY:-}" ]]; then
+  echo "JUDGE_API_KEY is not available from $SECRET_FILE" >&2
+  exit 2
 fi
 
 client_cmd='
