@@ -12,8 +12,8 @@ from typing import Any
 
 import yaml
 
-
 AIME_SAMPLE_COUNT = 30
+BALANCED_EXTRACTOR = "nvfp4_kv_aime_recovery_extractor.BalancedBoxedExtractor"
 
 
 def load_mapping(path: Path) -> dict[str, Any]:
@@ -40,6 +40,7 @@ def prepare(
     output: Path,
     judge_concurrency: int,
     judge_retries: int,
+    balanced_boxed_extractor: bool,
 ) -> dict[str, Any]:
     if judge_concurrency < 1:
         raise ValueError("judge_concurrency must be positive")
@@ -66,6 +67,10 @@ def prepare(
     judge = params["extra"]["judge"]
     judge["max_concurrent_requests"] = judge_concurrency
     judge["max_retries"] = judge_retries
+    if balanced_boxed_extractor:
+        params["extra"]["custom_config"] = {
+            "extraction": BALANCED_EXTRACTOR,
+        }
 
     # A cache miss must fail quickly because recovery launches no model server.
     params["max_retries"] = 1
@@ -76,9 +81,7 @@ def prepare(
     with output.open("w") as stream:
         yaml.safe_dump(config, stream, sort_keys=False)
 
-    judge_cache = (
-        artifacts / "AIME_2025" / "cache" / "cache.sqlite" / "cache.db"
-    )
+    judge_cache = artifacts / "AIME_2025" / "cache" / "cache.sqlite" / "cache.db"
     return {
         "task_dir": str(task_dir),
         "output": str(output),
@@ -89,6 +92,7 @@ def prepare(
         ),
         "judge_concurrency": judge_concurrency,
         "judge_retries": judge_retries,
+        "balanced_boxed_extractor": balanced_boxed_extractor,
     }
 
 
@@ -98,6 +102,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--judge-concurrency", type=int, default=4)
     parser.add_argument("--judge-retries", type=int, default=32)
+    parser.add_argument("--balanced-boxed-extractor", action="store_true")
     return parser.parse_args()
 
 
@@ -109,6 +114,7 @@ def main() -> None:
         output,
         args.judge_concurrency,
         args.judge_retries,
+        args.balanced_boxed_extractor,
     )
     print(json.dumps(manifest, sort_keys=True))
 

@@ -19,6 +19,7 @@ CLIENT_IMAGE=${AIME_CLIENT_IMAGE:-gitlab-master.nvidia.com/dl/joc/competitive_ev
 SECRET_FILE=${SECRET_FILE:-$BASE/eval_rundirs/kv_study/qwen3_8b/nvfp4_kv_bnd_nightly/20260422_221445-abb0a9b26af0a22e/simple_evals.AIME_2025/.secrets.env}
 JUDGE_CONCURRENCY=${JUDGE_CONCURRENCY:-4}
 JUDGE_RETRIES=${JUDGE_RETRIES:-32}
+BALANCED_BOXED_EXTRACTOR=${BALANCED_BOXED_EXTRACTOR:-0}
 
 if [[ -n "${TASK_DIR:-}" ]]; then
   task_dir=$TASK_DIR
@@ -40,11 +41,16 @@ if [[ ! -f "$task_dir/artifacts/config_ef.yaml" ]]; then
 fi
 
 recovery_config=$task_dir/artifacts/config_ef.recovery.yaml
+recovery_args=()
+if [[ "$BALANCED_BOXED_EXTRACTOR" == "1" ]]; then
+  recovery_args+=(--balanced-boxed-extractor)
+fi
 "$VENV/bin/python" "$REPO/benchmarks/nvfp4_kv_judge_recovery.py" \
   "$task_dir" \
   --output "$recovery_config" \
   --judge-concurrency "$JUDGE_CONCURRENCY" \
-  --judge-retries "$JUDGE_RETRIES"
+  --judge-retries "$JUDGE_RETRIES" \
+  "${recovery_args[@]}"
 
 if [[ -f "$SECRET_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -79,6 +85,7 @@ client_cmd='
 set -euo pipefail
 export HF_HOME=/hf-cache
 export HUGGINGFACE_HUB_CACHE=/hf-cache/hub
+export PYTHONPATH=/recovery${PYTHONPATH:+:$PYTHONPATH}
 export API_KEY=${DUMMY_API_KEY:-dummy}
 cp /results/config_ef.recovery.yaml config_ef.yaml
 cmd=$(command -v nemo-evaluator >/dev/null 2>&1 && echo nemo-evaluator || echo eval-factory)
@@ -90,7 +97,7 @@ srun --mpi pmix --overlap --nodes 1 --ntasks 1 \
   --container-image "$CLIENT_IMAGE" \
   --container-env DUMMY_API_KEY,HF_TOKEN,HUGGING_FACE_HUB_TOKEN,HUGGINGFACE_HUB_CACHE,JUDGE_API_KEY,NEMO_EVALUATOR_TELEMETRY_LEVEL,NEMO_EVALUATOR_TELEMETRY_SESSION_ID \
   --no-container-mount-home \
-  --container-mounts "$task_dir/artifacts:/results,$BASE/hf_cache:/hf-cache" \
+  --container-mounts "$task_dir/artifacts:/results,$BASE/hf_cache:/hf-cache,$REPO/benchmarks:/recovery" \
   --output "$task_dir/logs/judge-recovery-${SLURM_JOB_ID}.log" \
   bash -lc "$client_cmd"
 
