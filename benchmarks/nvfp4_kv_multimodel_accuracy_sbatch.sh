@@ -27,6 +27,7 @@ GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
 LIMIT_SAMPLES=${LIMIT_SAMPLES:-}
 NUM_REPEATS_OVERRIDE=${NUM_REPEATS_OVERRIDE:-}
 MAX_NEW_TOKENS_OVERRIDE=${MAX_NEW_TOKENS_OVERRIDE:-}
+ALLOW_SHORT_OUTPUT_CAP=${ALLOW_SHORT_OUTPUT_CAP:-0}
 JUDGE_MAX_CONCURRENT_REQUESTS=${JUDGE_MAX_CONCURRENT_REQUESTS:-32}
 SERVER_SEED=${SERVER_SEED:-0}
 KV_CACHE_DTYPE_SKIP_LAYERS=
@@ -45,7 +46,9 @@ CASES=(
   fp8
   default_nvfp4
   four_over_six
+  skip_first_128
   skip_last_128
+  skip_first_128_four_over_six
   skip_last_128_four_over_six
   fp8_k_nvfp4_v
 )
@@ -76,14 +79,18 @@ CASE=${CASE:-default_nvfp4}
 
 MODEL_EXTRA_ARGS=()
 FLASHINFER_AUTOTUNE=enabled
+MODEL_MAX_POSITION_EMBEDDINGS=262144
+MAX_MODEL_LEN=262144
+MAX_NEW_TOKENS=131072
+PROMPT_TOKEN_RESERVE=131072
+CANONICAL_MIN_NEW_TOKENS=131072
+OUTPUT_CAP_POLICY=at_least_128k
 case "$MODEL_KEY" in
   qwen36_35b_a3b)
     MODEL=Qwen/Qwen3.6-35B-A3B
     WEIGHT_FORMAT=bf16
     TENSOR_PARALLEL_SIZE=4
     DATA_PARALLEL_SIZE=1
-    MAX_MODEL_LEN=40960
-    MAX_NEW_TOKENS=32768
     MAX_NUM_SEQS=256
     PARALLELISM=256
     MODEL_EXTRA_ARGS+=(--language-model-only)
@@ -93,8 +100,6 @@ case "$MODEL_KEY" in
     WEIGHT_FORMAT=nvfp4
     TENSOR_PARALLEL_SIZE=1
     DATA_PARALLEL_SIZE=4
-    MAX_MODEL_LEN=131072
-    MAX_NEW_TOKENS=65536
     MAX_NUM_SEQS=128
     PARALLELISM=256
     MODEL_EXTRA_ARGS+=(
@@ -108,8 +113,6 @@ case "$MODEL_KEY" in
     WEIGHT_FORMAT=bf16
     TENSOR_PARALLEL_SIZE=1
     DATA_PARALLEL_SIZE=4
-    MAX_MODEL_LEN=131072
-    MAX_NEW_TOKENS=65536
     MAX_NUM_SEQS=128
     PARALLELISM=256
     MODEL_EXTRA_ARGS+=(
@@ -123,8 +126,6 @@ case "$MODEL_KEY" in
     WEIGHT_FORMAT=nvfp4
     TENSOR_PARALLEL_SIZE=4
     DATA_PARALLEL_SIZE=1
-    MAX_MODEL_LEN=40960
-    MAX_NEW_TOKENS=32768
     MAX_NUM_SEQS=128
     PARALLELISM=128
     MODEL_EXTRA_ARGS+=(--no-enable-flashinfer-autotune)
@@ -135,8 +136,6 @@ case "$MODEL_KEY" in
     WEIGHT_FORMAT=bf16
     TENSOR_PARALLEL_SIZE=4
     DATA_PARALLEL_SIZE=1
-    MAX_MODEL_LEN=40960
-    MAX_NEW_TOKENS=32768
     MAX_NUM_SEQS=128
     PARALLELISM=128
     MODEL_EXTRA_ARGS+=(--no-enable-flashinfer-autotune)
@@ -148,8 +147,14 @@ case "$MODEL_KEY" in
     KV_CACHE_DTYPE_SKIP_LAYERS=sliding_window
     TENSOR_PARALLEL_SIZE=4
     DATA_PARALLEL_SIZE=1
-    MAX_MODEL_LEN=40960
-    MAX_NEW_TOKENS=32768
+    MODEL_MAX_POSITION_EMBEDDINGS=131072
+    MAX_MODEL_LEN=131072
+    # The largest observed prompt is 2,887 tokens (GPQA). Keep 185 tokens
+    # of headroom while maximizing output within GPT-OSS's 128K context.
+    MAX_NEW_TOKENS=128000
+    PROMPT_TOKEN_RESERVE=3072
+    CANONICAL_MIN_NEW_TOKENS=128000
+    OUTPUT_CAP_POLICY=model_limit_minus_prompt_reserve
     MAX_NUM_SEQS=256
     PARALLELISM=256
     MODEL_EXTRA_ARGS+=(
@@ -167,6 +172,30 @@ MAX_MODEL_LEN=${MAX_MODEL_LEN_OVERRIDE:-$MAX_MODEL_LEN}
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS_OVERRIDE:-$MAX_NEW_TOKENS}
 MAX_NUM_SEQS=${MAX_NUM_SEQS_OVERRIDE:-$MAX_NUM_SEQS}
 PARALLELISM=${PARALLELISM_OVERRIDE:-$PARALLELISM}
+
+if ! [[ "$MAX_MODEL_LEN" =~ ^[0-9]+$ && "$MAX_NEW_TOKENS" =~ ^[0-9]+$ ]]; then
+  echo "MAX_MODEL_LEN and MAX_NEW_TOKENS must be positive integers" >&2
+  exit 2
+fi
+if ((MAX_MODEL_LEN <= 0 || MAX_NEW_TOKENS <= 0)); then
+  echo "MAX_MODEL_LEN and MAX_NEW_TOKENS must be positive" >&2
+  exit 2
+fi
+if ((MAX_NEW_TOKENS >= MAX_MODEL_LEN)); then
+  echo "MAX_NEW_TOKENS=$MAX_NEW_TOKENS must leave room in MAX_MODEL_LEN=$MAX_MODEL_LEN for the prompt" >&2
+  exit 2
+fi
+if [[ "$RUN_MODE" == "full" && "$ALLOW_SHORT_OUTPUT_CAP" != "1" ]]; then
+  if ((MAX_NEW_TOKENS < CANONICAL_MIN_NEW_TOKENS)); then
+    echo "Refusing non-canonical output cap $MAX_NEW_TOKENS for $MODEL_KEY; expected at least $CANONICAL_MIN_NEW_TOKENS" >&2
+    echo "Set ALLOW_SHORT_OUTPUT_CAP=1 only for explicitly labeled diagnostics" >&2
+    exit 2
+  fi
+  if ((MAX_NEW_TOKENS + PROMPT_TOKEN_RESERVE > MAX_MODEL_LEN)); then
+    echo "MAX_NEW_TOKENS=$MAX_NEW_TOKENS plus prompt reserve $PROMPT_TOKEN_RESERVE exceeds MAX_MODEL_LEN=$MAX_MODEL_LEN" >&2
+    exit 2
+  fi
+fi
 LOGROOT=${LOGROOT:-$BASE/eval_rundirs/kv_study/multimodel/nvfp4_kv_$(date +%Y%m%d_%H%M%S)}
 RUN_DIR=$LOGROOT/$MODEL_KEY/$CASE
 RUNTIME_TAG=${SLURM_JOB_ID:-manual}_${SLURM_ARRAY_TASK_ID:-0}_${MODEL_KEY}_${CASE}
@@ -292,17 +321,24 @@ case "$CASE" in
     export VLLM_NVFP4_KV_QUANT_ALGO=four_over_six
     server_extra_args+=(--kv-cache-dtype nvfp4)
     ;;
-  skip_last_128|skip_last_128_four_over_six)
-    requires_trtllm_lse=1
-    if [[ "$CASE" == "skip_last_128_four_over_six" ]]; then
-      export VLLM_NVFP4_KV_QUANT_ALGO=four_over_six
+  skip_first_*|skip_last_*)
+    if [[ "$CASE" =~ ^skip_(first|last)_([0-9]+)(_four_over_six)?$ ]]; then
+      skip_location=${BASH_REMATCH[1]}
+      skip_tokens=${BASH_REMATCH[2]}
+      requires_trtllm_lse=1
+      if [[ -n "${BASH_REMATCH[3]:-}" ]]; then
+        export VLLM_NVFP4_KV_QUANT_ALGO=four_over_six
+      fi
+      server_extra_args+=(
+        --kv-cache-dtype nvfp4
+        --attention-config.mixed_kv_n_tokens "$skip_tokens"
+        --attention-config.mixed_kv_dtype fp8
+        --attention-config.mixed_kv_location "$skip_location"
+      )
+    else
+      echo "Invalid skip-N case: $CASE" >&2
+      exit 2
     fi
-    server_extra_args+=(
-      --kv-cache-dtype nvfp4
-      --attention-config.mixed_kv_n_tokens "$SKIP_N"
-      --attention-config.mixed_kv_dtype fp8
-      --attention-config.mixed_kv_location last
-    )
     ;;
   fp8_k_nvfp4_v)
     ATTENTION_BACKEND=TRITON_ATTN
@@ -353,6 +389,10 @@ tensor_parallel_size: $TENSOR_PARALLEL_SIZE
 data_parallel_size: $DATA_PARALLEL_SIZE
 max_model_len: $MAX_MODEL_LEN
 max_new_tokens: $MAX_NEW_TOKENS
+model_max_position_embeddings: $MODEL_MAX_POSITION_EMBEDDINGS
+prompt_token_reserve: $PROMPT_TOKEN_RESERVE
+output_cap_policy: $OUTPUT_CAP_POLICY
+canonical_min_new_tokens: $CANONICAL_MIN_NEW_TOKENS
 max_num_seqs: $MAX_NUM_SEQS
 parallelism: $PARALLELISM
 tasks: $TASKS
@@ -517,6 +557,10 @@ eval_kind: $eval_kind
 num_repeats: $repeats
 limit_samples: ${LIMIT_SAMPLES:-null}
 max_new_tokens: $max_new_tokens
+max_model_len: $MAX_MODEL_LEN
+model_max_position_embeddings: $MODEL_MAX_POSITION_EMBEDDINGS
+prompt_token_reserve: $PROMPT_TOKEN_RESERVE
+output_cap_policy: $OUTPUT_CAP_POLICY
 parallelism: $PARALLELISM
 EOF
 

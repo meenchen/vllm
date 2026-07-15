@@ -8,7 +8,8 @@ MODE=${MODE:-${1:-nano_long}}
 STAMP=${STAMP:-$(date +%Y%m%d_%H%M%S)}
 LOGROOT=${LOGROOT:-$BASE/eval_rundirs/kv_study/multimodel/followup_$STAMP}
 MAX_CONCURRENT=${MAX_CONCURRENT:-4}
-SBATCH_TIME=${SBATCH_TIME:-04:00:00}
+SBATCH_TIME=${SBATCH_TIME:-}
+SBATCH_PARTITION=${SBATCH_PARTITION:-}
 DEPENDENCY=${DEPENDENCY:-}
 SBATCH_COMMENT=${SBATCH_COMMENT:-'{"OccupiedIdleGPUsJobReaper":{"exemptIdleTimeMins":"240","reason":"benchmarking","description":"KV accuracy follow-up evaluation"}}'}
 
@@ -17,7 +18,9 @@ CASES=(
   fp8
   default_nvfp4
   four_over_six
+  skip_first_128
   skip_last_128
+  skip_first_128_four_over_six
   skip_last_128_four_over_six
   fp8_k_nvfp4_v
 )
@@ -75,11 +78,34 @@ case "$MODE" in
         lcb
     done
     ;;
+  canonical_128k)
+    SBATCH_TIME=${SBATCH_TIME:-12:00:00}
+    SBATCH_PARTITION=${SBATCH_PARTITION:-batch_long}
+    for model_key in \
+      qwen36_35b_a3b \
+      nemotron3_nano_30b_a3b_nvfp4 \
+      nemotron3_nano_30b_a3b_bf16 \
+      nemotron3_super_120b_a12b_nvfp4 \
+      nemotron3_super_120b_a12b_bf16 \
+      gpt_oss_20b; do
+      for case_name in "${CASES[@]}"; do
+        for task in "${TASKS[@]}"; do
+          add_matrix_row \
+            "$LOGROOT/canonical_128k" \
+            "$model_key" \
+            "$case_name" \
+            "$task"
+        done
+      done
+    done
+    ;;
   *)
-    echo "MODE must be nano_long, bf16_weights, or mixed_repeats" >&2
+    echo "MODE must be nano_long, bf16_weights, mixed_repeats, or canonical_128k" >&2
     exit 2
     ;;
 esac
+
+SBATCH_TIME=${SBATCH_TIME:-04:00:00}
 
 row_count=$(wc -l < "$MATRIX_FILE" | tr -d '[:space:]')
 if [[ "$row_count" -eq 0 ]]; then
@@ -104,6 +130,9 @@ sbatch_args=(
 )
 if [[ -n "$DEPENDENCY" ]]; then
   sbatch_args+=(--dependency "$DEPENDENCY")
+fi
+if [[ -n "$SBATCH_PARTITION" ]]; then
+  sbatch_args+=(--partition "$SBATCH_PARTITION")
 fi
 
 job_id=$(sbatch "${sbatch_args[@]}" "$SCRIPT")
