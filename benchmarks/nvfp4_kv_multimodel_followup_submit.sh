@@ -79,7 +79,7 @@ case "$MODE" in
     done
     ;;
   canonical_128k)
-    SBATCH_TIME=${SBATCH_TIME:-12:00:00}
+    SBATCH_TIME=${SBATCH_TIME:-1-00:00:00}
     SBATCH_PARTITION=${SBATCH_PARTITION:-batch_long}
     for model_key in \
       qwen36_35b_a3b \
@@ -89,13 +89,11 @@ case "$MODE" in
       nemotron3_super_120b_a12b_bf16 \
       gpt_oss_20b; do
       for case_name in "${CASES[@]}"; do
-        for task in "${TASKS[@]}"; do
-          add_matrix_row \
-            "$LOGROOT/canonical_128k" \
-            "$model_key" \
-            "$case_name" \
-            "$task"
-        done
+        add_matrix_row \
+          "$LOGROOT/canonical_128k" \
+          "$model_key" \
+          "$case_name" \
+          "${TASKS[*]}"
       done
     done
     ;;
