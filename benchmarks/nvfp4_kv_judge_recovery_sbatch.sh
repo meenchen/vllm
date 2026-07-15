@@ -2,7 +2,7 @@
 
 #SBATCH --time 01:30:00
 #SBATCH --account coreai_dlalgo_modelopt
-#SBATCH --partition batch
+#SBATCH --partition cpu
 #SBATCH --nodes 1
 #SBATCH --ntasks-per-node 1
 #SBATCH --cpus-per-task 8
