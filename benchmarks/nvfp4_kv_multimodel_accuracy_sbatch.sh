@@ -33,6 +33,8 @@ AALCR_PARALLELISM=${AALCR_PARALLELISM:-16}
 AALCR_JUDGE_MODEL=${AALCR_JUDGE_MODEL:-nvidia/qwen/qwen-235b}
 AALCR_JUDGE_URL=${AALCR_JUDGE_URL:-https://inference-api.nvidia.com/v1}
 AALCR_JUDGE_MAX_NEW_TOKENS=${AALCR_JUDGE_MAX_NEW_TOKENS:-4096}
+AALCR_JUDGE_PARALLELISM=${AALCR_JUDGE_PARALLELISM:-32}
+AALCR_JUDGE_REQUEST_TIMEOUT=${AALCR_JUDGE_REQUEST_TIMEOUT:-3600}
 SERVER_SEED=${SERVER_SEED:-0}
 KV_CACHE_DTYPE_SKIP_LAYERS=
 SECRET_FILE=${SECRET_FILE:-$BASE/eval_rundirs/kv_study/qwen3_8b/nvfp4_kv_bnd_nightly/20260422_221445-abb0a9b26af0a22e/simple_evals.AIME_2025/.secrets.env}
@@ -599,6 +601,8 @@ model_max_position_embeddings: $MODEL_MAX_POSITION_EMBEDDINGS
 prompt_token_reserve: $PROMPT_TOKEN_RESERVE
 output_cap_policy: $OUTPUT_CAP_POLICY
 parallelism: $task_parallelism
+aalcr_judge_parallelism: $AALCR_JUDGE_PARALLELISM
+aalcr_judge_request_timeout: $AALCR_JUDGE_REQUEST_TIMEOUT
 EOF
 
   if [[ "$task" == "lcb" ]]; then
@@ -684,12 +688,12 @@ config:
     extra:
       judge:
         api_key: INFERENCE_API_KEY
-        args: null
+        args: "++inference.timeout=$AALCR_JUDGE_REQUEST_TIMEOUT"
         generation_type: null
         hle_strict_judge: false
         max_new_tokens: $AALCR_JUDGE_MAX_NEW_TOKENS
         model_id: $AALCR_JUDGE_MODEL
-        parallelism: null
+        parallelism: $AALCR_JUDGE_PARALLELISM
         prompt_config: null
         random_seed: 1234
         temperature: 0.0
