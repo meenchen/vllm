@@ -29,9 +29,14 @@ NUM_REPEATS_OVERRIDE=${NUM_REPEATS_OVERRIDE:-}
 MAX_NEW_TOKENS_OVERRIDE=${MAX_NEW_TOKENS_OVERRIDE:-}
 ALLOW_SHORT_OUTPUT_CAP=${ALLOW_SHORT_OUTPUT_CAP:-0}
 JUDGE_MAX_CONCURRENT_REQUESTS=${JUDGE_MAX_CONCURRENT_REQUESTS:-32}
+AALCR_PARALLELISM=${AALCR_PARALLELISM:-16}
+AALCR_JUDGE_MODEL=${AALCR_JUDGE_MODEL:-nvidia/qwen/qwen-235b}
+AALCR_JUDGE_URL=${AALCR_JUDGE_URL:-https://inference-api.nvidia.com/v1}
+AALCR_JUDGE_MAX_NEW_TOKENS=${AALCR_JUDGE_MAX_NEW_TOKENS:-4096}
 SERVER_SEED=${SERVER_SEED:-0}
 KV_CACHE_DTYPE_SKIP_LAYERS=
 SECRET_FILE=${SECRET_FILE:-$BASE/eval_rundirs/kv_study/qwen3_8b/nvfp4_kv_bnd_nightly/20260422_221445-abb0a9b26af0a22e/simple_evals.AIME_2025/.secrets.env}
+AALCR_SECRET_FILE=${AALCR_SECRET_FILE:-}
 
 MODEL_KEYS=(
   qwen36_35b_a3b
@@ -209,6 +214,17 @@ if [[ -f "$SECRET_FILE" ]]; then
 else
   echo "Warning: SECRET_FILE does not exist: $SECRET_FILE"
 fi
+if [[ " $TASKS " == *" aalcr "* ]]; then
+  if [[ -z "$AALCR_SECRET_FILE" ]]; then
+    : # INFERENCE_API_KEY may already be present in the submission environment.
+  elif [[ -f "$AALCR_SECRET_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$AALCR_SECRET_FILE"
+  else
+    echo "AALCR_SECRET_FILE does not exist: $AALCR_SECRET_FILE" >&2
+    exit 2
+  fi
+fi
 
 export_from_scoped_secret() {
   local dst=$1
@@ -227,8 +243,14 @@ export_from_scoped_secret HF_TOKEN
 export_from_scoped_secret HUGGING_FACE_HUB_TOKEN
 export_from_scoped_secret DUMMY_API_KEY
 export_from_scoped_secret JUDGE_API_KEY
+export_from_scoped_secret INFERENCE_API_KEY
 export_from_scoped_secret NEMO_EVALUATOR_TELEMETRY_LEVEL
 export_from_scoped_secret NEMO_EVALUATOR_TELEMETRY_SESSION_ID
+
+if [[ " $TASKS " == *" aalcr "* && -z "${INFERENCE_API_KEY:-}" ]]; then
+  echo "INFERENCE_API_KEY is required for the AA-LCR judge" >&2
+  exit 2
+fi
 
 export DUMMY_API_KEY=${DUMMY_API_KEY:-dummy}
 export HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-${HF_TOKEN:-}}
@@ -504,6 +526,7 @@ EOF
 run_task() {
   local task=$1
   local eval_kind eval_type eval_task repeats client_image task_dir custom_config
+  local task_parallelism=$PARALLELISM
   case "$task" in
     aime25)
       eval_kind=simple_evals.AIME_2025
@@ -529,6 +552,15 @@ run_task() {
       client_image=${LCB_CLIENT_IMAGE:-nvcr.io/nvidia/eval-factory/nemo-skills:26.03}
       custom_config=""
       ;;
+    aalcr)
+      eval_kind=ns_aa_lcr
+      eval_type=ns_aa_lcr
+      eval_task=aalcr
+      repeats=${AALCR_NUM_REPEATS:-16}
+      task_parallelism=$AALCR_PARALLELISM
+      client_image=${AALCR_CLIENT_IMAGE:-nvcr.io/nvidia/eval-factory/nemo-skills:26.03}
+      custom_config=""
+      ;;
     *)
       echo "Unknown task $task" >&2
       return 2
@@ -539,6 +571,11 @@ run_task() {
     repeats=$NUM_REPEATS_OVERRIDE
   fi
   local max_new_tokens=$MAX_NEW_TOKENS
+  if [[ "$task" == "aalcr" ]]; then
+    # AA-LCR prompts are up to 123K tokens. Preserve the established evaluator
+    # behavior and let vLLM use the remaining model context for generation.
+    max_new_tokens=null
+  fi
   task_dir=$RUN_DIR/$task
   mkdir -p "$task_dir/artifacts" "$task_dir/logs"
 
@@ -561,7 +598,7 @@ max_model_len: $MAX_MODEL_LEN
 model_max_position_embeddings: $MODEL_MAX_POSITION_EMBEDDINGS
 prompt_token_reserve: $PROMPT_TOKEN_RESERVE
 output_cap_policy: $OUTPUT_CAP_POLICY
-parallelism: $PARALLELISM
+parallelism: $task_parallelism
 EOF
 
   if [[ "$task" == "lcb" ]]; then
@@ -604,7 +641,7 @@ config:
       use_sandbox: false
     max_new_tokens: $max_new_tokens
     max_retries: 10
-    parallelism: $PARALLELISM
+    parallelism: $task_parallelism
     request_timeout: 100000
     task: $eval_task
     temperature: 0.6
@@ -639,6 +676,60 @@ target:
     type: chat
     url: http://127.0.0.1:$PORT/v1/chat/completions
 EOF
+  elif [[ "$task" == "aalcr" ]]; then
+    cat > "$task_dir/artifacts/config_ef.yaml" <<EOF
+config:
+  output_dir: /results
+  params:
+    extra:
+      judge:
+        api_key: INFERENCE_API_KEY
+        args: null
+        generation_type: null
+        hle_strict_judge: false
+        max_new_tokens: $AALCR_JUDGE_MAX_NEW_TOKENS
+        model_id: $AALCR_JUDGE_MODEL
+        parallelism: null
+        prompt_config: null
+        random_seed: 1234
+        temperature: 0.0
+        top_p: 1.0
+        url: $AALCR_JUDGE_URL
+      judge_support: true
+      num_repeats: $repeats
+      prompt_config: null
+      ruler:
+        cluster: null
+        data_dir: null
+        max_seq_length: null
+        num_samples: null
+        setup: null
+        tasks: null
+        template_tokens: null
+        tokenizer_path: null
+      server_type: null
+      skip_data_dir_check: true
+      system_message: null
+      use_sandbox: false
+    max_new_tokens: null
+    max_retries: 10
+    parallelism: $task_parallelism
+    request_timeout: 100000
+    task: $eval_task
+    temperature: 1.0
+    top_p: 1.0
+${limit_yaml}
+  type: $eval_type
+target:
+  api_endpoint:
+    adapter_config:
+      params_to_remove:
+      - max_tokens
+    api_key_name: DUMMY_API_KEY
+    model_id: $SERVED_MODEL_NAME
+    type: chat
+    url: http://127.0.0.1:$PORT/v1/chat/completions
+EOF
   else
     cat > "$task_dir/artifacts/config_ef.yaml" <<EOF
 config:
@@ -662,7 +753,7 @@ ${custom_config}
       n_samples: $repeats
     max_new_tokens: $max_new_tokens
     max_retries: 10
-    parallelism: $PARALLELISM
+    parallelism: $task_parallelism
     request_timeout: 100000
     task: $eval_task
     temperature: 0.6
@@ -719,7 +810,7 @@ $cmd run_eval --run_config config_ef.yaml
   echo "Starting $eval_kind for MODEL=$MODEL CASE=$CASE"
   srun --mpi pmix --overlap --nodes 1 --ntasks 1 \
     --container-image "$client_image" \
-    --container-env DUMMY_API_KEY,HF_TOKEN,HUGGING_FACE_HUB_TOKEN,HUGGINGFACE_HUB_CACHE,JUDGE_API_KEY,NEMO_EVALUATOR_TELEMETRY_LEVEL,NEMO_EVALUATOR_TELEMETRY_SESSION_ID \
+    --container-env DUMMY_API_KEY,HF_TOKEN,HUGGING_FACE_HUB_TOKEN,HUGGINGFACE_HUB_CACHE,JUDGE_API_KEY,INFERENCE_API_KEY,NEMO_EVALUATOR_TELEMETRY_LEVEL,NEMO_EVALUATOR_TELEMETRY_SESSION_ID \
     --no-container-mount-home \
     --container-mounts "$mounts" \
     --output "$task_dir/logs/client-${SLURM_JOB_ID:-manual}.log" \

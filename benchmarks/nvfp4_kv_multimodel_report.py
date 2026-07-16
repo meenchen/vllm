@@ -27,20 +27,24 @@ CASE_ORDER = (
     "fp8",
     "default_nvfp4",
     "four_over_six",
+    "skip_first_128",
+    "skip_first_128_four_over_six",
     "skip_last_128",
     "skip_last_128_four_over_six",
     "fp8_k_nvfp4_v",
 )
-TASK_ORDER = ("aime25", "gpqa", "lcb")
+TASK_ORDER = ("aime25", "gpqa", "lcb", "aalcr")
 TASK_SAMPLE_COUNTS = {
     "aime25": 30,
     "gpqa": 198,
     "lcb": 454,
+    "aalcr": 100,
 }
 DEFAULT_NUM_REPEATS = {
     "aime25": 64,
     "gpqa": 64,
     "lcb": 8,
+    "aalcr": 16,
 }
 EXPECTED_SCORED_RESPONSES = {
     task: TASK_SAMPLE_COUNTS[task] * repeats
@@ -162,7 +166,7 @@ def score_from_results(results: dict[str, Any]) -> tuple[float | None, float | N
                 scores = metrics.get(metric_name, {}).get("scores", {})
                 if not isinstance(scores, dict):
                     continue
-                preferred = ("accuracy", "score")
+                preferred = ("accuracy", "score", "judge_correct")
                 keys = (*preferred, *(key for key in scores if key not in preferred))
                 for key in keys:
                     score_data = scores.get(key)

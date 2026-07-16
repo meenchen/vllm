@@ -9,6 +9,7 @@ STAMP=${STAMP:-$(date +%Y%m%d_%H%M%S)}
 LOGROOT=${LOGROOT:-$BASE/eval_rundirs/kv_study/multimodel/nvfp4_kv_${MODE}_$STAMP}
 SBATCH_COMMENT=${SBATCH_COMMENT:-'{"OccupiedIdleGPUsJobReaper":{"exemptIdleTimeMins":"240","reason":"benchmarking","description":"Multi-model KV accuracy evaluation"}}'}
 SBATCH_TIME=${SBATCH_TIME:-04:00:00}
+SBATCH_PARTITION=${SBATCH_PARTITION:-batch}
 
 mkdir -p "$LOGROOT"
 
@@ -24,8 +25,14 @@ case "$MODE" in
       export_args=$export_args,TASKS=$TASKS
     fi
     ;;
+  aalcr)
+    # GPT-OSS is excluded: AA-LCR reaches 155,904 total tokens, above its
+    # 131,072-token model limit. Indices 0-44 cover Qwen and Nemotron.
+    array=${ARRAY:-0-44%4}
+    export_args=ALL,RUN_MODE=full,LOGROOT=$LOGROOT,TASKS=aalcr,HF_HUB_OFFLINE=1,TRANSFORMERS_OFFLINE=1
+    ;;
   *)
-    echo "MODE must be smoke or full" >&2
+    echo "MODE must be smoke, full, or aalcr" >&2
     exit 2
     ;;
 esac
@@ -34,6 +41,7 @@ job_id=$(sbatch \
   --parsable \
   --array "$array" \
   --time "$SBATCH_TIME" \
+  --partition "$SBATCH_PARTITION" \
   --chdir "$BASE" \
   --comment "$SBATCH_COMMENT" \
   --output "$LOGROOT/slurm-%A_%a.out" \
