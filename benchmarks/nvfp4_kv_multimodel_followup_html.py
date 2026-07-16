@@ -17,6 +17,8 @@ CASE_LABELS = {
     "fp8": "FP8 KV",
     "default_nvfp4": "NVFP4",
     "four_over_six": "NVFP4 4-over-6",
+    "skip_first_128": "NVFP4 skip-first 128",
+    "skip_first_128_four_over_six": "NVFP4 skip-first 128 + 4-over-6",
     "skip_last_128": "NVFP4 skip-last 128",
     "skip_last_128_four_over_six": "NVFP4 skip-last 128 + 4-over-6",
     "fp8_k_nvfp4_v": "FP8-K / NVFP4-V",
@@ -62,6 +64,10 @@ def context_label(value: Any) -> str:
         return "unknown"
     tokens = int(value)
     return f"{tokens / 1024:.0f}K" if tokens % 1024 == 0 else f"{tokens:,}"
+
+
+def output_label(value: Any) -> str:
+    return "model limit" if value is None else context_label(value)
 
 
 def layer_policy(value: Any) -> str:
@@ -111,7 +117,7 @@ def render_summary_rows(rows: list[dict[str, Any]]) -> str:
         case = text(row.get("case"))
         task = text(row.get("task"))
         context = context_label(row.get("max_model_len"))
-        output = context_label(row.get("max_new_tokens"))
+        output = output_label(row.get("max_new_tokens"))
         rendered.append(
             "<tr "
             f'data-model="{html.escape(model_label)}" '
@@ -149,7 +155,7 @@ def render_run_rows(rows: list[dict[str, Any]]) -> str:
             f"<td>{html.escape(CASE_LABELS.get(text(row.get('case')), text(row.get('case'))))}</td>"
             f"<td>{html.escape(text(row.get('task')).upper())}</td>"
             f"<td>{html.escape(context_label(row.get('max_model_len')))}</td>"
-            f"<td>{html.escape(context_label(row.get('max_new_tokens')))}</td>"
+            f"<td>{html.escape(output_label(row.get('max_new_tokens')))}</td>"
             f"<td>{html.escape(skip_layers)}</td>"
             f"<td>{number(row.get('server_seed'), 0)}</td>"
             f"<td>{number(row.get('successful_count'), 0)}</td>"
@@ -212,7 +218,7 @@ def render(
     model_options = option_html(option_values(summary_rows, "model_key"))
     task_options = option_html(option_values(summary_rows, "task"))
     contexts = sorted({context_label(row.get("max_model_len")) for row in summary_rows})
-    outputs = sorted({context_label(row.get("max_new_tokens")) for row in summary_rows})
+    outputs = sorted({output_label(row.get("max_new_tokens")) for row in summary_rows})
     policy_options = option_html(
         sorted(
             {
