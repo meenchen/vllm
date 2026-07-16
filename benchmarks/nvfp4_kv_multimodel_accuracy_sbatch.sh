@@ -329,6 +329,7 @@ export VLLM_NVFP4_KV_QUANT_ALGO=default
 ATTENTION_BACKEND=FLASHINFER
 FORCE_TRTLLM_ATTENTION=1
 requires_trtllm_lse=0
+PRIMARY_BLOCK_SIZE=
 
 case "$CASE" in
   bf16)
@@ -357,6 +358,10 @@ case "$CASE" in
         --attention-config.mixed_kv_dtype fp8
         --attention-config.mixed_kv_location "$skip_location"
       )
+      if [[ "$skip_location" == "first" ]]; then
+        PRIMARY_BLOCK_SIZE=$skip_tokens
+        server_extra_args+=(--block-size "$PRIMARY_BLOCK_SIZE")
+      fi
     else
       echo "Invalid skip-N case: $CASE" >&2
       exit 2
@@ -422,6 +427,7 @@ skip_n: $SKIP_N
 kv_algo: $VLLM_NVFP4_KV_QUANT_ALGO
 attention_backend: $ATTENTION_BACKEND
 force_trtllm_attention: $FORCE_TRTLLM_ATTENTION
+primary_block_size: ${PRIMARY_BLOCK_SIZE:-null}
 flashinfer_autotune: $FLASHINFER_AUTOTUNE
 cuda_graph: enabled_by_default_no_enforce_eager
 server_seed: $SERVER_SEED
