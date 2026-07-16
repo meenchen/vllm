@@ -27,8 +27,10 @@ case "$MODE" in
     ;;
   aalcr)
     # GPT-OSS is excluded: AA-LCR reaches 155,904 total tokens, above its
-    # 131,072-token model limit. Indices 0-44 cover Qwen and Nemotron.
-    array=${ARRAY:-0-44%4}
+    # 131,072-token model limit. Hybrid-model skip-first-128 cases are also
+    # excluded because their unified 256-token KV pages cannot represent a
+    # partial first page. Skip-last-128 and all Qwen cases remain supported.
+    array=${ARRAY:-0-12,14,16-21,23,25-30,32,34-39,41,43-44%4}
     export_args=ALL,RUN_MODE=full,LOGROOT=$LOGROOT,TASKS=aalcr,HF_HUB_OFFLINE=1,TRANSFORMERS_OFFLINE=1
     ;;
   *)
