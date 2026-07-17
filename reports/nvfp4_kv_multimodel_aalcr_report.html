@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NVFP4 KV Long-Context AA-LCR Study</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #18222c;
+      --muted: #5d6873;
+      --line: #d4dbe1;
+      --surface: #f4f7f8;
+      --accent: #17627d;
+      --good: #17633a;
+      --warn: #8a5500;
+      --bad: #a12b2b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: #fff;
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      padding: 24px clamp(18px, 4vw, 48px);
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+    main { padding: 0 clamp(18px, 4vw, 48px) 44px; }
+    h1 { margin: 0 0 8px; font-size: 26px; letter-spacing: 0; }
+    h2 { margin: 28px 0 12px; font-size: 18px; letter-spacing: 0; }
+    p { color: var(--muted); max-width: 980px; overflow-wrap: anywhere; }
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }
+    .meta div {
+      min-width: 0;
+      border-left: 3px solid var(--accent);
+      padding-left: 10px;
+      overflow-wrap: anywhere;
+    }
+    .meta span { display: block; color: var(--muted); font-size: 12px; }
+    .filters {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+      margin: 14px 0;
+      max-width: 980px;
+    }
+    label { min-width: 0; color: var(--muted); font-size: 12px; }
+    select {
+      display: block;
+      width: 100%;
+      min-height: 36px;
+      margin-top: 4px;
+      padding: 6px 8px;
+      color: var(--ink);
+      background: #fff;
+      border: 1px solid #aeb9c2;
+      border-radius: 6px;
+    }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); }
+    table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 13px; }
+    th, td { padding: 8px 9px; border-bottom: 1px solid var(--line); text-align: left; }
+    th { position: sticky; top: 0; background: #eaf0f2; color: #293a47; z-index: 1; }
+    tbody tr:nth-child(even) { background: #fafbfc; }
+    tbody tr:hover { background: #eef5f7; }
+    .case { font-weight: 650; }
+    .metric { color: var(--accent); font-weight: 700; }
+    .good { color: var(--good); font-weight: 650; }
+    .warn { color: var(--warn); font-weight: 650; }
+    .bad { color: var(--bad); font-weight: 700; }
+    ul { margin: 8px 0 0 18px; padding: 0; max-width: 1100px; }
+    li { margin: 6px 0; overflow-wrap: anywhere; }
+    .count { color: var(--muted); font-size: 13px; }
+    details { margin-top: 20px; }
+    summary { cursor: pointer; font-weight: 650; }
+    @media (max-width: 600px) {
+      header { padding: 20px 16px; }
+      main { padding: 0 16px 36px; }
+      h1 { font-size: 24px; }
+      .meta, .filters { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>NVFP4 KV Long-Context AA-LCR Study</h1>
+    <p>Accuracy, token usage, context-length diagnostics, and repeated-run
+    variability for KV-cache formats and NVFP4 accuracy techniques. Deltas are
+    absolute percentage points from a configuration-matched BF16 KV baseline.</p>
+    <div class="meta">
+      <div><span>Models</span>5</div>
+      <div><span>Complete runs</span>37</div>
+      <div><span>Incomplete diagnostics</span>0</div>
+      <div><span>CUDA graph evidence</span>37/37</div>
+      <div><span>Performance rows</span>0</div>
+      <div><span>Branch SHA</span>8d002f64d</div>
+      <div><span>Generated</span>2026-07-17 08:40 UTC</div>
+    </div>
+  </header>
+  <main>
+    <h2>Run Notes</h2>
+    <ul><li>100 prompts x 16 repeats per supported case; 262144-token model limit; CUDA graphs enabled; no output-token cap. All 37 supported cases completed. Eight hybrid skip-first-128 variants are unsupported because the unified KV page size is 256 tokens.</li></ul>
+
+    <h2>Accuracy And Tokens</h2>
+    <div class="filters">
+      <label>Model<select id="model"><option value="">All models</option><option value="nemotron3_nano_30b_a3b_bf16">nemotron3_nano_30b_a3b_bf16</option><option value="nemotron3_nano_30b_a3b_nvfp4">nemotron3_nano_30b_a3b_nvfp4</option><option value="nemotron3_super_120b_a12b_bf16">nemotron3_super_120b_a12b_bf16</option><option value="nemotron3_super_120b_a12b_nvfp4">nemotron3_super_120b_a12b_nvfp4</option><option value="qwen36_35b_a3b">qwen36_35b_a3b</option></select></label>
+      <label>Task<select id="task"><option value="">All tasks</option><option value="aalcr">aalcr</option></select></label>
+      <label>Context<select id="context"><option value="">All contexts</option><option value="256K">256K</option></select></label>
+      <label>Max output<select id="output"><option value="">All output caps</option><option value="model limit">model limit</option></select></label>
+      <label>Layer policy<select id="policy"><option value="">All policies</option><option value="all layers">all layers</option></select></label>
+    </div>
+    <p class="count" id="visible-count"></p>
+    <div class="table-wrap">
+      <table id="summary-table">
+        <thead><tr>
+          <th>Model</th><th>Weights</th><th>Context</th><th>Max output</th><th>Layer policy</th>
+          <th>KV case</th><th>Task</th><th>Runs</th><th>Accuracy</th>
+          <th>Delta vs BF16</th><th>Stdev pp</th><th>Avg completion tokens</th>
+          <th>Length stop rate</th><th>CUDA graph</th>
+        </tr></thead>
+        <tbody><tr data-model="qwen36_35b_a3b" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>qwen36_35b_a3b</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>BF16 KV</td><td>AALCR</td><td>1</td><td class=metric>61.25%</td><td class="">+0.00 pp</td><td>-</td><td>2,758.6</td><td>-</td><td>yes</td></tr>
+<tr data-model="qwen36_35b_a3b" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>qwen36_35b_a3b</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>FP8 KV</td><td>AALCR</td><td>1</td><td class=metric>61.62%</td><td class="good">+0.37 pp</td><td>-</td><td>2,759.1</td><td>-</td><td>yes</td></tr>
+<tr data-model="qwen36_35b_a3b" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>qwen36_35b_a3b</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4</td><td>AALCR</td><td>1</td><td class=metric>57.88%</td><td class="bad">-3.38 pp</td><td>-</td><td>2,793.5</td><td>-</td><td>yes</td></tr>
+<tr data-model="qwen36_35b_a3b" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>qwen36_35b_a3b</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 4-over-6</td><td>AALCR</td><td>1</td><td class=metric>58.31%</td><td class="bad">-2.94 pp</td><td>-</td><td>2,812.8</td><td>-</td><td>yes</td></tr>
+<tr data-model="qwen36_35b_a3b" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>qwen36_35b_a3b</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 skip-first 128</td><td>AALCR</td><td>1</td><td class=metric>57.88%</td><td class="bad">-3.38 pp</td><td>-</td><td>2,831.4</td><td>-</td><td>yes</td></tr>
+<tr data-model="qwen36_35b_a3b" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>qwen36_35b_a3b</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 skip-first 128 + 4-over-6</td><td>AALCR</td><td>1</td><td class=metric>59.56%</td><td class="bad">-1.69 pp</td><td>-</td><td>2,831.6</td><td>-</td><td>yes</td></tr>
+<tr data-model="qwen36_35b_a3b" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>qwen36_35b_a3b</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 skip-last 128</td><td>AALCR</td><td>1</td><td class=metric>57.81%</td><td class="bad">-3.44 pp</td><td>-</td><td>2,815.8</td><td>-</td><td>yes</td></tr>
+<tr data-model="qwen36_35b_a3b" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>qwen36_35b_a3b</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 skip-last 128 + 4-over-6</td><td>AALCR</td><td>1</td><td class=metric>57.00%</td><td class="bad">-4.25 pp</td><td>-</td><td>2,817.5</td><td>-</td><td>yes</td></tr>
+<tr data-model="qwen36_35b_a3b" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>qwen36_35b_a3b</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>FP8-K / NVFP4-V</td><td>AALCR</td><td>1</td><td class=metric>60.00%</td><td class="bad">-1.25 pp</td><td>-</td><td>2,807.8</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_nano_30b_a3b_nvfp4" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_nano_30b_a3b_nvfp4</td><td>nvfp4</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>BF16 KV</td><td>AALCR</td><td>1</td><td class=metric>32.38%</td><td class="">+0.00 pp</td><td>-</td><td>5,059.0</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_nano_30b_a3b_nvfp4" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_nano_30b_a3b_nvfp4</td><td>nvfp4</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>FP8 KV</td><td>AALCR</td><td>1</td><td class=metric>33.25%</td><td class="good">+0.88 pp</td><td>-</td><td>4,911.9</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_nano_30b_a3b_nvfp4" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_nano_30b_a3b_nvfp4</td><td>nvfp4</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4</td><td>AALCR</td><td>1</td><td class=metric>11.38%</td><td class="bad">-21.00 pp</td><td>-</td><td>8,864.0</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_nano_30b_a3b_nvfp4" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_nano_30b_a3b_nvfp4</td><td>nvfp4</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 4-over-6</td><td>AALCR</td><td>1</td><td class=metric>10.50%</td><td class="bad">-21.88 pp</td><td>-</td><td>8,876.1</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_nano_30b_a3b_nvfp4" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_nano_30b_a3b_nvfp4</td><td>nvfp4</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 skip-last 128</td><td>AALCR</td><td>1</td><td class=metric>14.94%</td><td class="bad">-17.44 pp</td><td>-</td><td>7,415.5</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_nano_30b_a3b_nvfp4" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_nano_30b_a3b_nvfp4</td><td>nvfp4</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 skip-last 128 + 4-over-6</td><td>AALCR</td><td>1</td><td class=metric>16.25%</td><td class="bad">-16.12 pp</td><td>-</td><td>7,375.8</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_nano_30b_a3b_nvfp4" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_nano_30b_a3b_nvfp4</td><td>nvfp4</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>FP8-K / NVFP4-V</td><td>AALCR</td><td>1</td><td class=metric>32.81%</td><td class="good">+0.44 pp</td><td>-</td><td>5,168.8</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_nano_30b_a3b_bf16" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_nano_30b_a3b_bf16</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>BF16 KV</td><td>AALCR</td><td>1</td><td class=metric>34.50%</td><td class="">+0.00 pp</td><td>-</td><td>4,988.4</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_nano_30b_a3b_bf16" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_nano_30b_a3b_bf16</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>FP8 KV</td><td>AALCR</td><td>1</td><td class=metric>32.56%</td><td class="bad">-1.94 pp</td><td>-</td><td>5,401.5</td><td>0.12%</td><td>yes</td></tr>
+<tr data-model="nemotron3_nano_30b_a3b_bf16" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_nano_30b_a3b_bf16</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4</td><td>AALCR</td><td>1</td><td class=metric>10.88%</td><td class="bad">-23.62 pp</td><td>-</td><td>10,310.8</td><td>0.50%</td><td>yes</td></tr>
+<tr data-model="nemotron3_nano_30b_a3b_bf16" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_nano_30b_a3b_bf16</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 4-over-6</td><td>AALCR</td><td>1</td><td class=metric>12.31%</td><td class="bad">-22.19 pp</td><td>-</td><td>10,116.4</td><td>0.75%</td><td>yes</td></tr>
+<tr data-model="nemotron3_nano_30b_a3b_bf16" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_nano_30b_a3b_bf16</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 skip-last 128</td><td>AALCR</td><td>1</td><td class=metric>15.94%</td><td class="bad">-18.56 pp</td><td>-</td><td>8,221.3</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_nano_30b_a3b_bf16" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_nano_30b_a3b_bf16</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 skip-last 128 + 4-over-6</td><td>AALCR</td><td>1</td><td class=metric>17.88%</td><td class="bad">-16.62 pp</td><td>-</td><td>8,085.8</td><td>0.12%</td><td>yes</td></tr>
+<tr data-model="nemotron3_nano_30b_a3b_bf16" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_nano_30b_a3b_bf16</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>FP8-K / NVFP4-V</td><td>AALCR</td><td>1</td><td class=metric>34.44%</td><td class="">-0.06 pp</td><td>-</td><td>5,041.6</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_super_120b_a12b_nvfp4" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_super_120b_a12b_nvfp4</td><td>nvfp4</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>BF16 KV</td><td>AALCR</td><td>1</td><td class=metric>58.19%</td><td class="">+0.00 pp</td><td>-</td><td>8,864.4</td><td>0.06%</td><td>yes</td></tr>
+<tr data-model="nemotron3_super_120b_a12b_nvfp4" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_super_120b_a12b_nvfp4</td><td>nvfp4</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>FP8 KV</td><td>AALCR</td><td>1</td><td class=metric>57.69%</td><td class="warn">-0.50 pp</td><td>-</td><td>9,277.6</td><td>0.06%</td><td>yes</td></tr>
+<tr data-model="nemotron3_super_120b_a12b_nvfp4" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_super_120b_a12b_nvfp4</td><td>nvfp4</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4</td><td>AALCR</td><td>1</td><td class=metric>57.06%</td><td class="bad">-1.12 pp</td><td>-</td><td>8,988.7</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_super_120b_a12b_nvfp4" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_super_120b_a12b_nvfp4</td><td>nvfp4</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 4-over-6</td><td>AALCR</td><td>1</td><td class=metric>58.38%</td><td class="">+0.19 pp</td><td>-</td><td>9,185.5</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_super_120b_a12b_nvfp4" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_super_120b_a12b_nvfp4</td><td>nvfp4</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 skip-last 128</td><td>AALCR</td><td>1</td><td class=metric>57.81%</td><td class="warn">-0.38 pp</td><td>-</td><td>9,224.3</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_super_120b_a12b_nvfp4" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_super_120b_a12b_nvfp4</td><td>nvfp4</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 skip-last 128 + 4-over-6</td><td>AALCR</td><td>1</td><td class=metric>57.25%</td><td class="warn">-0.94 pp</td><td>-</td><td>9,218.6</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_super_120b_a12b_nvfp4" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_super_120b_a12b_nvfp4</td><td>nvfp4</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>FP8-K / NVFP4-V</td><td>AALCR</td><td>1</td><td class=metric>58.06%</td><td class="">-0.13 pp</td><td>-</td><td>9,121.7</td><td>0.00%</td><td>yes</td></tr>
+<tr data-model="nemotron3_super_120b_a12b_bf16" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_super_120b_a12b_bf16</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>BF16 KV</td><td>AALCR</td><td>1</td><td class=metric>58.81%</td><td class="">+0.00 pp</td><td>-</td><td>9,125.9</td><td>0.06%</td><td>yes</td></tr>
+<tr data-model="nemotron3_super_120b_a12b_bf16" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_super_120b_a12b_bf16</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>FP8 KV</td><td>AALCR</td><td>1</td><td class=metric>58.19%</td><td class="warn">-0.62 pp</td><td>-</td><td>9,379.8</td><td>0.06%</td><td>yes</td></tr>
+<tr data-model="nemotron3_super_120b_a12b_bf16" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_super_120b_a12b_bf16</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4</td><td>AALCR</td><td>1</td><td class=metric>57.25%</td><td class="bad">-1.56 pp</td><td>-</td><td>9,512.5</td><td>0.06%</td><td>yes</td></tr>
+<tr data-model="nemotron3_super_120b_a12b_bf16" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_super_120b_a12b_bf16</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 4-over-6</td><td>AALCR</td><td>1</td><td class=metric>58.06%</td><td class="warn">-0.75 pp</td><td>-</td><td>9,278.9</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_super_120b_a12b_bf16" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_super_120b_a12b_bf16</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 skip-last 128</td><td>AALCR</td><td>1</td><td class=metric>57.19%</td><td class="bad">-1.62 pp</td><td>-</td><td>9,438.8</td><td>0.06%</td><td>yes</td></tr>
+<tr data-model="nemotron3_super_120b_a12b_bf16" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_super_120b_a12b_bf16</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>NVFP4 skip-last 128 + 4-over-6</td><td>AALCR</td><td>1</td><td class=metric>57.94%</td><td class="warn">-0.88 pp</td><td>-</td><td>8,982.6</td><td>-</td><td>yes</td></tr>
+<tr data-model="nemotron3_super_120b_a12b_bf16" data-task="aalcr" data-context="256K" data-output="model limit" data-policy="all layers"><td>nemotron3_super_120b_a12b_bf16</td><td>bf16</td><td>256K</td><td>model limit</td><td>all layers</td><td class=case>FP8-K / NVFP4-V</td><td>AALCR</td><td>1</td><td class=metric>59.19%</td><td class="good">+0.38 pp</td><td>-</td><td>9,386.8</td><td>0.00%</td><td>yes</td></tr></tbody>
+      </table>
+    </div>
+
+
+
+    <details>
+      <summary>Run-level audit (37 rows)</summary>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Run</th><th>Model</th><th>KV case</th><th>Task</th><th>Context</th><th>Max output</th>
+            <th>Layer policy</th><th>Seed</th><th>Responses</th><th>Accuracy</th>
+            <th>Avg completion tokens</th><th>Length stop rate</th>
+            <th>CUDA graph</th><th>Status</th>
+          </tr></thead>
+          <tbody><tr><td>AA-LCR</td><td>qwen36_35b_a3b</td><td>BF16 KV</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>61.25%</td><td>2,758.6</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>qwen36_35b_a3b</td><td>FP8 KV</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>61.62%</td><td>2,759.1</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>qwen36_35b_a3b</td><td>NVFP4</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>57.88%</td><td>2,793.5</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>qwen36_35b_a3b</td><td>NVFP4 4-over-6</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>58.31%</td><td>2,812.8</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>qwen36_35b_a3b</td><td>NVFP4 skip-first 128</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>57.88%</td><td>2,831.4</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>qwen36_35b_a3b</td><td>NVFP4 skip-first 128 + 4-over-6</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>59.56%</td><td>2,831.6</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>qwen36_35b_a3b</td><td>NVFP4 skip-last 128</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>57.81%</td><td>2,815.8</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>qwen36_35b_a3b</td><td>NVFP4 skip-last 128 + 4-over-6</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>57.00%</td><td>2,817.5</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>qwen36_35b_a3b</td><td>FP8-K / NVFP4-V</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>60.00%</td><td>2,807.8</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_nano_30b_a3b_nvfp4</td><td>BF16 KV</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>32.38%</td><td>5,059.0</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_nano_30b_a3b_nvfp4</td><td>FP8 KV</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>33.25%</td><td>4,911.9</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_nano_30b_a3b_nvfp4</td><td>NVFP4</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>11.38%</td><td>8,864.0</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_nano_30b_a3b_nvfp4</td><td>NVFP4 4-over-6</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>10.50%</td><td>8,876.1</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_nano_30b_a3b_nvfp4</td><td>NVFP4 skip-last 128</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>14.94%</td><td>7,415.5</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_nano_30b_a3b_nvfp4</td><td>NVFP4 skip-last 128 + 4-over-6</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>16.25%</td><td>7,375.8</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_nano_30b_a3b_nvfp4</td><td>FP8-K / NVFP4-V</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>32.81%</td><td>5,168.8</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_nano_30b_a3b_bf16</td><td>BF16 KV</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>34.50%</td><td>4,988.4</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_nano_30b_a3b_bf16</td><td>FP8 KV</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>32.56%</td><td>5,401.5</td><td>0.12%</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_nano_30b_a3b_bf16</td><td>NVFP4</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>10.88%</td><td>10,310.8</td><td>0.50%</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_nano_30b_a3b_bf16</td><td>NVFP4 4-over-6</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>12.31%</td><td>10,116.4</td><td>0.75%</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_nano_30b_a3b_bf16</td><td>NVFP4 skip-last 128</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>15.94%</td><td>8,221.3</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_nano_30b_a3b_bf16</td><td>NVFP4 skip-last 128 + 4-over-6</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>17.88%</td><td>8,085.8</td><td>0.12%</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_nano_30b_a3b_bf16</td><td>FP8-K / NVFP4-V</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>34.44%</td><td>5,041.6</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_super_120b_a12b_nvfp4</td><td>BF16 KV</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>58.19%</td><td>8,864.4</td><td>0.06%</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_super_120b_a12b_nvfp4</td><td>FP8 KV</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>57.69%</td><td>9,277.6</td><td>0.06%</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_super_120b_a12b_nvfp4</td><td>NVFP4</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>57.06%</td><td>8,988.7</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_super_120b_a12b_nvfp4</td><td>NVFP4 4-over-6</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>58.38%</td><td>9,185.5</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_super_120b_a12b_nvfp4</td><td>NVFP4 skip-last 128</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>57.81%</td><td>9,224.3</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_super_120b_a12b_nvfp4</td><td>NVFP4 skip-last 128 + 4-over-6</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>57.25%</td><td>9,218.6</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_super_120b_a12b_nvfp4</td><td>FP8-K / NVFP4-V</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>58.06%</td><td>9,121.7</td><td>0.00%</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_super_120b_a12b_bf16</td><td>BF16 KV</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>58.81%</td><td>9,125.9</td><td>0.06%</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_super_120b_a12b_bf16</td><td>FP8 KV</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>58.19%</td><td>9,379.8</td><td>0.06%</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_super_120b_a12b_bf16</td><td>NVFP4</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>57.25%</td><td>9,512.5</td><td>0.06%</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_super_120b_a12b_bf16</td><td>NVFP4 4-over-6</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>58.06%</td><td>9,278.9</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_super_120b_a12b_bf16</td><td>NVFP4 skip-last 128</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>57.19%</td><td>9,438.8</td><td>0.06%</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_super_120b_a12b_bf16</td><td>NVFP4 skip-last 128 + 4-over-6</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>57.94%</td><td>8,982.6</td><td>-</td><td>yes</td><td>complete</td></tr>
+<tr><td>AA-LCR</td><td>nemotron3_super_120b_a12b_bf16</td><td>FP8-K / NVFP4-V</td><td>AALCR</td><td>256K</td><td>model limit</td><td>all layers</td><td>0</td><td>1,600</td><td>59.19%</td><td>9,386.8</td><td>0.00%</td><td>yes</td><td>complete</td></tr></tbody>
+        </table>
+      </div>
+    </details>
+  </main>
+  <script>
+    const controls = ["model", "task", "context", "output", "policy"];
+    const rows = [...document.querySelectorAll("#summary-table tbody tr")];
+    function filterRows() {
+      const selected = Object.fromEntries(
+        controls.map(id => [id, document.getElementById(id).value])
+      );
+      let visible = 0;
+      for (const row of rows) {
+        const show = controls.every(id => !selected[id] || row.dataset[id] === selected[id]);
+        row.hidden = !show;
+        if (show) visible += 1;
+      }
+      document.getElementById("visible-count").textContent = `${visible} result rows`;
+    }
+    controls.forEach(id => document.getElementById(id).addEventListener("change", filterRows));
+    filterRows();
+  </script>
+</body>
+</html>
