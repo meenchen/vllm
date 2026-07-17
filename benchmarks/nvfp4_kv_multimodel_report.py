@@ -194,9 +194,6 @@ def finalized_repeat_count(artifacts: Path, task: str) -> int:
 def load_aalcr_output_stats(artifacts: Path) -> dict[str, Any]:
     """Recompute unique output stats after an interrupted/resumed AA-LCR run."""
     count = 0
-    prompt_tokens = 0.0
-    completion_tokens = 0.0
-    token_count = 0
     finish_reasons: Counter[str] = Counter()
     result_dir = artifacts / "eval-results" / "aalcr"
 
@@ -208,12 +205,6 @@ def load_aalcr_output_stats(artifacts: Path) -> dict[str, Any]:
                     if not isinstance(record, dict):
                         continue
                     count += 1
-                    prompt = as_float(record.get("input_tokens"))
-                    completion = as_float(record.get("num_generated_tokens"))
-                    if prompt is not None and completion is not None:
-                        prompt_tokens += prompt
-                        completion_tokens += completion
-                        token_count += 1
                     finish_reason = record.get("finish_reason")
                     if isinstance(finish_reason, str):
                         finish_reasons[finish_reason] += 1
@@ -226,15 +217,40 @@ def load_aalcr_output_stats(artifacts: Path) -> dict[str, Any]:
         "finish_stop": finish_reasons.get("stop", 0),
         "finish_length": finish_reasons.get("length", 0),
     }
-    if token_count == count and count:
-        stats.update(
-            {
-                "avg_prompt_tokens": prompt_tokens / count,
-                "avg_completion_tokens": completion_tokens / count,
-                "avg_total_tokens": (prompt_tokens + completion_tokens) / count,
-            }
-        )
     return stats
+
+
+def load_aalcr_response_cache_stats(artifacts: Path) -> dict[str, Any]:
+    """Load deduplicated model-token usage from the target response cache."""
+    cache_db = artifacts / "cache" / "responses" / "cache.db"
+    if not cache_db.exists():
+        return {}
+    value = "CAST(value AS TEXT)"
+    prompt = f"json_extract({value}, '$.usage.prompt_tokens')"
+    completion = f"json_extract({value}, '$.usage.completion_tokens')"
+    total = f"json_extract({value}, '$.usage.total_tokens')"
+    query = f"""
+        SELECT count(*), avg({prompt}), avg({completion}), avg({total})
+        FROM Cache
+        WHERE json_valid({value})
+          AND {prompt} IS NOT NULL
+          AND {completion} IS NOT NULL
+          AND {total} IS NOT NULL
+    """
+    try:
+        uri = f"file:{cache_db.resolve()}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as connection:
+            row = connection.execute(query).fetchone()
+    except (OSError, sqlite3.Error):
+        return {}
+    if not row:
+        return {}
+    return {
+        "count": as_int(row[0]),
+        "avg_prompt_tokens": as_float(row[1]),
+        "avg_completion_tokens": as_float(row[2]),
+        "avg_total_tokens": as_float(row[3]),
+    }
 
 
 def collect(root: Path) -> list[Result]:
@@ -288,16 +304,16 @@ def collect(root: Path) -> list[Result]:
                         count != expected or successful_count != expected
                     ):
                         output_stats = load_aalcr_output_stats(artifacts)
+                        cache_stats = load_aalcr_response_cache_stats(artifacts)
                         count = as_int(output_stats.get("count"))
-                        successful_count = as_int(
-                            output_stats.get("successful_count")
-                        )
+                        successful_count = count
                         token_count = successful_count
-                        prompt = as_float(output_stats.get("avg_prompt_tokens"))
-                        completion = as_float(
-                            output_stats.get("avg_completion_tokens")
-                        )
-                        total = as_float(output_stats.get("avg_total_tokens"))
+                        if as_int(cache_stats.get("count")) == count:
+                            prompt = as_float(cache_stats.get("avg_prompt_tokens"))
+                            completion = as_float(
+                                cache_stats.get("avg_completion_tokens")
+                            )
+                            total = as_float(cache_stats.get("avg_total_tokens"))
                         finish_stop = as_int(output_stats.get("finish_stop"))
                         finish_length = as_int(output_stats.get("finish_length"))
                     aalcr_complete = (
