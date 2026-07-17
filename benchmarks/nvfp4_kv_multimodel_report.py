@@ -8,6 +8,7 @@ import argparse
 import csv
 import json
 import sqlite3
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -185,6 +186,57 @@ def multiply(value: float | None, count: int | None) -> float | None:
     return value * count
 
 
+def finalized_repeat_count(artifacts: Path, task: str) -> int:
+    result_dir = artifacts / "eval-results" / task
+    return sum(1 for _ in result_dir.glob("output-rs*.jsonl.done"))
+
+
+def load_aalcr_output_stats(artifacts: Path) -> dict[str, Any]:
+    """Recompute unique output stats after an interrupted/resumed AA-LCR run."""
+    count = 0
+    prompt_tokens = 0.0
+    completion_tokens = 0.0
+    token_count = 0
+    finish_reasons: Counter[str] = Counter()
+    result_dir = artifacts / "eval-results" / "aalcr"
+
+    try:
+        for path in sorted(result_dir.glob("output-rs*.jsonl")):
+            with path.open() as stream:
+                for line in stream:
+                    record = json.loads(line)
+                    if not isinstance(record, dict):
+                        continue
+                    count += 1
+                    prompt = as_float(record.get("input_tokens"))
+                    completion = as_float(record.get("num_generated_tokens"))
+                    if prompt is not None and completion is not None:
+                        prompt_tokens += prompt
+                        completion_tokens += completion
+                        token_count += 1
+                    finish_reason = record.get("finish_reason")
+                    if isinstance(finish_reason, str):
+                        finish_reasons[finish_reason] += 1
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    stats: dict[str, Any] = {
+        "count": count,
+        "successful_count": count,
+        "finish_stop": finish_reasons.get("stop", 0),
+        "finish_length": finish_reasons.get("length", 0),
+    }
+    if token_count == count and count:
+        stats.update(
+            {
+                "avg_prompt_tokens": prompt_tokens / count,
+                "avg_completion_tokens": completion_tokens / count,
+                "avg_total_tokens": (prompt_tokens + completion_tokens) / count,
+            }
+        )
+    return stats
+
+
 def collect(root: Path) -> list[Result]:
     rows: list[Result] = []
     for model_dir in sorted(root.iterdir() if root.exists() else []):
@@ -209,6 +261,7 @@ def collect(root: Path) -> list[Result]:
                 task_config = load_mapping(artifacts / "task_config.yaml")
                 results = load_mapping(artifacts / "results.yml")
                 metrics = load_mapping(artifacts / "eval_factory_metrics.json")
+                num_repeats = as_int(task_config.get("num_repeats"))
                 response = metrics.get("response_stats", {})
                 if not response:
                     response = load_response_stats_cache(artifacts)
@@ -221,6 +274,37 @@ def collect(root: Path) -> list[Result]:
                 prompt = as_float(response.get("avg_prompt_tokens"))
                 completion = as_float(response.get("avg_completion_tokens"))
                 total = as_float(response.get("avg_total_tokens"))
+                finish_stop = as_int(finish_reason.get("stop"))
+                finish_length = as_int(finish_reason.get("length"))
+                aalcr_complete = True
+                if task_dir.name == "aalcr":
+                    expected = expected_scored_responses(task_dir.name, num_repeats)
+                    aalcr_complete = (
+                        num_repeats is not None
+                        and finalized_repeat_count(artifacts, task_dir.name)
+                        == num_repeats
+                    )
+                    if aalcr_complete and (
+                        count != expected or successful_count != expected
+                    ):
+                        output_stats = load_aalcr_output_stats(artifacts)
+                        count = as_int(output_stats.get("count"))
+                        successful_count = as_int(
+                            output_stats.get("successful_count")
+                        )
+                        token_count = successful_count
+                        prompt = as_float(output_stats.get("avg_prompt_tokens"))
+                        completion = as_float(
+                            output_stats.get("avg_completion_tokens")
+                        )
+                        total = as_float(output_stats.get("avg_total_tokens"))
+                        finish_stop = as_int(output_stats.get("finish_stop"))
+                        finish_length = as_int(output_stats.get("finish_length"))
+                    aalcr_complete = (
+                        aalcr_complete
+                        and count == expected
+                        and successful_count == expected
+                    )
                 evidence_path = artifacts / "server_cuda_graph_evidence.log"
                 evidence = (
                     evidence_path.read_text(errors="replace")
@@ -228,7 +312,7 @@ def collect(root: Path) -> list[Result]:
                     else ""
                 )
                 has_logs = any((task_dir / "logs").glob("*.log"))
-                if score is not None:
+                if score is not None and aalcr_complete:
                     status = "complete"
                 elif has_logs:
                     status = "incomplete"
@@ -243,7 +327,7 @@ def collect(root: Path) -> list[Result]:
                         task=task_dir.name,
                         max_model_len=as_int(launcher.get("max_model_len")),
                         max_new_tokens=as_int(task_config.get("max_new_tokens")),
-                        num_repeats=as_int(task_config.get("num_repeats")),
+                        num_repeats=num_repeats,
                         server_seed=as_int(launcher.get("server_seed")),
                         kv_cache_dtype_skip_layers=str(
                             launcher.get("kv_cache_dtype_skip_layers", "") or ""
@@ -260,8 +344,8 @@ def collect(root: Path) -> list[Result]:
                         total_tokens=multiply(total, token_count),
                         runtime_seconds=as_float(evaluation.get("runtime_seconds")),
                         inference_seconds=as_float(response.get("inference_time")),
-                        finish_stop=as_int(finish_reason.get("stop")),
-                        finish_length=as_int(finish_reason.get("length")),
+                        finish_stop=finish_stop,
+                        finish_length=finish_length,
                         cuda_graph=(
                             "Graph capturing finished" in evidence
                             or case_cuda_graph
