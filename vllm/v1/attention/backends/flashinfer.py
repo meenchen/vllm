@@ -13,6 +13,7 @@ from flashinfer import (
     BatchPrefillWithPagedKVCacheWrapper,
     BatchPrefillWithRaggedKVCacheWrapper,
     MultiLevelCascadeAttentionWrapper,
+    nvfp4_kv_dequantize_pages_to_fp8,
 )
 from flashinfer.decode import fast_decode_plan, trtllm_batch_decode_with_kv_cache
 from flashinfer.prefill import trtllm_batch_context_with_kv_cache
@@ -86,6 +87,7 @@ FP4_DTYPE = torch.uint8
 logger = init_logger(__name__)
 
 trtllm_gen_workspace_buffer = None
+_mixed_v_fp8_workspaces: dict[tuple[torch.device, tuple[int, ...]], torch.Tensor] = {}
 
 
 def _get_trtllm_gen_workspace_buffer():
@@ -95,6 +97,19 @@ def _get_trtllm_gen_workspace_buffer():
             envs.VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE, dtype=torch.uint8, device="cuda"
         )
     return trtllm_gen_workspace_buffer
+
+
+def _get_mixed_v_fp8_workspace(k_cache: torch.Tensor) -> torch.Tensor:
+    key = (k_cache.device, tuple(k_cache.shape))
+    workspace = _mixed_v_fp8_workspaces.get(key)
+    if workspace is None:
+        workspace = torch.empty(
+            k_cache.shape,
+            dtype=FP8_DTYPE,
+            device=k_cache.device,
+        )
+        _mixed_v_fp8_workspaces[key] = workspace
+    return workspace
 
 
 @triton.jit
@@ -773,6 +788,12 @@ class FlashInferMetadata:
 
     cascade_wrapper: MultiLevelCascadeAttentionWrapper | None
 
+    paged_kv_indices: torch.Tensor | None = None
+    """Persistent page-index buffer used by mixed-KV dequantization."""
+
+    num_paged_kv_indices: torch.Tensor | None = None
+    """One-element GPU tensor containing the active page-index count."""
+
 
 class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
     reorder_batch_threshold: int = 1
@@ -875,8 +896,12 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                         "--kv-cache-dtype nvfp4 requires sm100f, "
                         "please try a different dtype or remove"
                     )
-                # Packed NVFP4 formats stay as strings for FlashInferImpl.
-                self.kv_cache_dtype = self.cache_dtype
+                # Native FlashInfer attention consumes the dequantized mixed
+                # cache as FP8. FlashInferImpl still receives cache_dtype and
+                # uses the packed mixed representation for TRTLLM attention.
+                self.kv_cache_dtype = (
+                    FP8_DTYPE if self.is_kvcache_fp8_k_nvfp4_v else self.cache_dtype
+                )
             else:
                 self.kv_cache_dtype = FlashInferBackend.get_dtype_for_flashinfer(
                     self.cache_dtype
@@ -1051,9 +1076,9 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                     dcp_a2a=self.dcp_a2a,
                 )
             else:
-                # NVFP4 KV cache requires the trtllm-gen backend inside
-                # the wrapper; fa2/fa3 do not support nvfp4.
-                backend = "trtllm-gen" if self.uses_nvfp4_cache else "auto"
+                # Symmetric NVFP4 requires trtllm-gen. Mixed KV is converted
+                # to regular FP8 before invoking this wrapper.
+                backend = "trtllm-gen" if self.is_kvcache_nvfp4 else "auto"
                 self._prefill_wrapper = BatchPrefillWithPagedKVCacheWrapper(
                     self._get_workspace_buffer(),
                     get_kv_cache_layout(),
@@ -1077,9 +1102,9 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                 paged_kv_indptr = None
                 paged_kv_indices = None
                 paged_kv_last_page_len = None
-            # NVFP4 KV cache requires the trtllm-gen backend inside
-            # the wrapper; fa2/fa3 do not support nvfp4.
-            backend = "trtllm-gen" if self.uses_nvfp4_cache else "auto"
+            # Symmetric NVFP4 requires trtllm-gen. Mixed KV is converted to
+            # regular FP8 before invoking this wrapper.
+            backend = "trtllm-gen" if self.is_kvcache_nvfp4 else "auto"
             decode_wrapper = BatchDecodeWithPagedKVCacheWrapper(
                 self._get_workspace_buffer(),
                 get_kv_cache_layout(),
@@ -1208,7 +1233,7 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         # Page sizes >= 128 must use trtllm-gen; force it for prefill too.
         prefill_force_trtllm = (
             True
-            if page_size >= 128 or self.uses_nvfp4_cache
+            if page_size >= 128 or self.is_kvcache_nvfp4
             else self.attention_config.use_trtllm_attention
         )
         prefill_use_trtllm = causal and use_trtllm_attention(
@@ -1343,6 +1368,14 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
             )
         else:
             paged_kv_indices = None
+
+        if self.is_kvcache_fp8_k_nvfp4_v and not all_uses_trtllm:
+            # Keep pointers and shapes stable for CUDA graph replay. The
+            # active count is the last indptr entry for this fixed batch.
+            attn_metadata.paged_kv_indices = self.paged_kv_indices.gpu
+            attn_metadata.num_paged_kv_indices = self.paged_kv_indptr.gpu[
+                num_reqs : num_reqs + 1
+            ]
 
         # Early-out for cascade attention
         if use_cascade:
@@ -1832,12 +1865,30 @@ class FlashInferImpl(AttentionImpl):
         # Split into correctly-strided data and scale views.
         packed_kv_data = None
         packed_kv_block_scales = None
+        mixed_fp8_kv_cache = None
         if self.is_kvcache_fp8_k_nvfp4_v:
             key_data, value_data, value_scales = fp8_k_nvfp4_v_cache_split_views(
                 kv_cache_permute[:, 0], self.head_size
             )
             packed_kv_data = (key_data, value_data)
             packed_kv_block_scales = (None, value_scales)
+            needs_mixed_flashinfer = (
+                num_prefill_tokens > 0 and not prefill_use_trtllm
+            ) or (num_decode_tokens > 0 and not decode_use_trtllm)
+            if needs_mixed_flashinfer:
+                assert attn_metadata.paged_kv_indices is not None
+                assert attn_metadata.num_paged_kv_indices is not None
+                value_fp8 = _get_mixed_v_fp8_workspace(key_data)
+                nvfp4_kv_dequantize_pages_to_fp8(
+                    value_data,
+                    value_scales,
+                    attn_metadata.paged_kv_indices,
+                    attn_metadata.num_paged_kv_indices,
+                    value_fp8,
+                    kv_layout=get_kv_cache_layout(),
+                    sf_layout="swizzled_4x4",
+                )
+                mixed_fp8_kv_cache = (key_data, value_fp8)
         elif self.is_kvcache_nvfp4:
             packed_kv_data, packed_kv_block_scales = nvfp4_kv_cache_split_views(
                 kv_cache_permute
@@ -1889,11 +1940,16 @@ class FlashInferImpl(AttentionImpl):
                     assert prefill_wrapper._sm_scale == self.scale
                     assert prefill_wrapper._causal == attn_metadata.causal
 
-                    if self.uses_nvfp4_cache:
-                        kv_cache_permute = packed_kv_data
-                    kv_cache_sf = (
-                        packed_kv_block_scales if self.uses_nvfp4_cache else None
-                    )
+                    if self.is_kvcache_fp8_k_nvfp4_v:
+                        assert mixed_fp8_kv_cache is not None
+                        attention_kv_cache = mixed_fp8_kv_cache
+                        kv_cache_sf = None
+                    elif self.is_kvcache_nvfp4:
+                        attention_kv_cache = packed_kv_data
+                        kv_cache_sf = packed_kv_block_scales
+                    else:
+                        attention_kv_cache = kv_cache_permute
+                        kv_cache_sf = None
 
                     # NVFP4 trtllm kernel only supports FP8 output.
                     # Use a pre-allocated FP8 buffer and dequantize
@@ -1908,7 +1964,7 @@ class FlashInferImpl(AttentionImpl):
 
                     prefill_wrapper.run(
                         prefill_query,
-                        kv_cache_permute,
+                        attention_kv_cache,
                         k_scale=layer._k_scale_float,
                         v_scale=layer._v_scale_float,
                         out=out_prefill,
@@ -2049,9 +2105,16 @@ class FlashInferImpl(AttentionImpl):
                 assert decode_wrapper._logits_soft_cap == (self.logits_soft_cap or 0.0)
                 assert decode_wrapper._sm_scale == self.scale
 
-                if self.uses_nvfp4_cache:
-                    kv_cache_permute = packed_kv_data
-                kv_cache_sf = packed_kv_block_scales if self.uses_nvfp4_cache else None
+                if self.is_kvcache_fp8_k_nvfp4_v:
+                    assert mixed_fp8_kv_cache is not None
+                    attention_kv_cache = mixed_fp8_kv_cache
+                    kv_cache_sf = None
+                elif self.is_kvcache_nvfp4:
+                    attention_kv_cache = packed_kv_data
+                    kv_cache_sf = packed_kv_block_scales
+                else:
+                    attention_kv_cache = kv_cache_permute
+                    kv_cache_sf = None
 
                 # NVFP4 kernel only supports FP8 output.
                 # Use a pre-allocated FP8 buffer and dequantize afterwards.
@@ -2073,7 +2136,7 @@ class FlashInferImpl(AttentionImpl):
                     )
                     decode_wrapper.run(
                         decode_query,
-                        kv_cache_permute,
+                        attention_kv_cache,
                         k_scale=layer._k_scale_float,
                         v_scale=layer._v_scale_float,
                         out=output_tmp,
@@ -2089,7 +2152,7 @@ class FlashInferImpl(AttentionImpl):
                 else:
                     decode_wrapper.run(
                         decode_query,
-                        kv_cache_permute,
+                        attention_kv_cache,
                         k_scale=layer._k_scale_float,
                         v_scale=layer._v_scale_float,
                         out=out_decode,
