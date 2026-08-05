@@ -68,37 +68,43 @@ python3 -m pip install \
 # incompatible with this source checkout and would otherwise shadow its JIT.
 python3 -m pip uninstall -y flashinfer-jit-cache || true
 
-if [[ ! -d "$SRC/flashinfer/.git" ]]; then
+if [[ "${PRESTAGED_SOURCES:-0}" != "1" ]]; then
+  if [[ ! -d "$SRC/flashinfer/.git" ]]; then
+    attempt=1
+    until git clone \
+        --depth 1 \
+        --branch "$FLASHINFER_SOURCE_BRANCH" \
+        https://github.com/meenchen/flashinfer.git \
+        "$SRC/flashinfer"; do
+      test "$attempt" -lt 5
+      attempt=$((attempt + 1))
+      sleep 10
+    done
+  fi
   attempt=1
-  until git clone \
+  until git -C "$SRC/flashinfer" fetch \
       --depth 1 \
-      --branch "$FLASHINFER_SOURCE_BRANCH" \
       https://github.com/meenchen/flashinfer.git \
-      "$SRC/flashinfer"; do
+      "$FLASHINFER_SOURCE_BRANCH"; do
     test "$attempt" -lt 5
     attempt=$((attempt + 1))
     sleep 10
   done
+  git -C "$SRC/flashinfer" checkout --detach FETCH_HEAD
+  attempt=1
+  until git -C "$SRC/flashinfer" submodule update \
+      --init --depth 1 3rdparty/cccl 3rdparty/cutlass; do
+    test "$attempt" -lt 5
+    attempt=$((attempt + 1))
+    sleep 10
+  done
+else
+  test -f "$SRC/flashinfer/flashinfer/__init__.py"
+  test -f "$SRC/flashinfer/3rdparty/cutlass/include/cutlass/cutlass.h"
+  test -d "$SRC/flashinfer/3rdparty/cccl/libcudacxx/include"
 fi
-attempt=1
-until git -C "$SRC/flashinfer" fetch \
-    --depth 1 \
-    https://github.com/meenchen/flashinfer.git \
-    "$FLASHINFER_SOURCE_BRANCH"; do
-  test "$attempt" -lt 5
-  attempt=$((attempt + 1))
-  sleep 10
-done
-git -C "$SRC/flashinfer" checkout --detach FETCH_HEAD
-attempt=1
-until git -C "$SRC/flashinfer" submodule update \
-    --init --depth 1 3rdparty/cccl 3rdparty/cutlass; do
-  test "$attempt" -lt 5
-  attempt=$((attempt + 1))
-  sleep 10
-done
-git -C "$SRC/flashinfer" rev-parse HEAD | tee "$RESULTS/flashinfer.sha"
-git -C "$VLLM_SRC" rev-parse HEAD | tee "$RESULTS/vllm.sha"
+printf '%s\n' "${FLASHINFER_SOURCE_SHA:-unknown}" | tee "$RESULTS/flashinfer.sha"
+printf '%s\n' "${VLLM_SOURCE_SHA:-unknown}" | tee "$RESULTS/vllm.sha"
 
 python3 -m pip install --no-build-isolation --no-deps -e "$SRC/flashinfer"
 python3 -m pip install --no-build-isolation --no-deps -e "$VLLM_SRC"
