@@ -77,6 +77,8 @@ python3 -m pip install --no-build-isolation --no-deps -e "$VLLM_SRC"
 python3 -m pip install --no-build-isolation --no-deps -e "$SRC/flashinfer"
 
 VLLM_BUILD="$ROOT/vllm-build"
+NVIDIA_CUDA_INCLUDE=/usr/local/lib/python3.12/dist-packages/nvidia/cu13/include
+test -f "$NVIDIA_CUDA_INCLUDE/cublas_v2.h"
 NVRTC_LIBRARY="$(find \
   /usr/local/lib/python3.12/dist-packages/nvidia \
   /usr/local/cuda \
@@ -91,6 +93,8 @@ TORCH_CUDA_ARCH_LIST=10.0 cmake \
   -DVLLM_TARGET_DEVICE=cuda \
   -DVLLM_PYTHON_EXECUTABLE="$(command -v python3)" \
   -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+  -DCMAKE_CUDA_FLAGS="-I$NVIDIA_CUDA_INCLUDE" \
+  -DCMAKE_CXX_FLAGS="-I$NVIDIA_CUDA_INCLUDE" \
   -DCMAKE_INSTALL_PREFIX="$VLLM_SRC" \
   -DCUDA_nvrtc_LIBRARY="$NVRTC_LIBRARY" \
   -DNVCC_THREADS="$NVCC_THREADS" \
