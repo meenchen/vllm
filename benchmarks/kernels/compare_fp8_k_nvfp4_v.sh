@@ -65,23 +65,25 @@ python3 -m pip install \
 # incompatible with this source checkout and would otherwise shadow its JIT.
 python3 -m pip uninstall -y flashinfer-jit-cache || true
 
-attempt=1
-until git clone \
-    --depth 1 \
-    --branch fp8-k-nvfp4-v-dequant-attention \
-    https://github.com/meenchen/flashinfer.git \
-    "$SRC/flashinfer"; do
-  test "$attempt" -lt 5
-  attempt=$((attempt + 1))
-  sleep 10
-done
-attempt=1
-until git -C "$SRC/flashinfer" submodule update \
-    --init --depth 1 3rdparty/cccl 3rdparty/cutlass; do
-  test "$attempt" -lt 5
-  attempt=$((attempt + 1))
-  sleep 10
-done
+if [[ ! -d "$SRC/flashinfer/.git" ]]; then
+  attempt=1
+  until git clone \
+      --depth 1 \
+      --branch fp8-k-nvfp4-v-dequant-attention \
+      https://github.com/meenchen/flashinfer.git \
+      "$SRC/flashinfer"; do
+    test "$attempt" -lt 5
+    attempt=$((attempt + 1))
+    sleep 10
+  done
+  attempt=1
+  until git -C "$SRC/flashinfer" submodule update \
+      --init --depth 1 3rdparty/cccl 3rdparty/cutlass; do
+    test "$attempt" -lt 5
+    attempt=$((attempt + 1))
+    sleep 10
+  done
+fi
 git -C "$SRC/flashinfer" rev-parse HEAD | tee "$RESULTS/flashinfer.sha"
 git -C "$VLLM_SRC" rev-parse HEAD | tee "$RESULTS/vllm.sha"
 
@@ -95,32 +97,38 @@ test -f "$NVIDIA_CUDA_INCLUDE/cublas_v2.h"
 CUBLAS_INCLUDE="$ROOT/nvidia-cublas-include"
 mkdir -p "$CUBLAS_INCLUDE"
 find "$NVIDIA_CUDA_INCLUDE" -maxdepth 1 -name 'cublas*.h' \
-  -exec ln -s {} "$CUBLAS_INCLUDE/" \;
+  -exec ln -sf {} "$CUBLAS_INCLUDE/" \;
+export CPATH="$CUBLAS_INCLUDE${CPATH:+:$CPATH}"
+export CPLUS_INCLUDE_PATH="$CUBLAS_INCLUDE${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}"
 NVRTC_LIBRARY="$(find \
   /usr/local/lib/python3.12/dist-packages/nvidia \
   /usr/local/cuda \
   -name 'libnvrtc.so*' -print -quit 2>/dev/null || true)"
 test -n "$NVRTC_LIBRARY"
 printf '%s\n' "$NVRTC_LIBRARY" | tee "$RESULTS/nvrtc-library.txt"
-TORCH_CUDA_ARCH_LIST=10.0 cmake \
-  -S "$VLLM_SRC" \
-  -B "$VLLM_BUILD" \
-  -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DVLLM_TARGET_DEVICE=cuda \
-  -DVLLM_PYTHON_EXECUTABLE="$(command -v python3)" \
-  -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
-  -DCMAKE_CUDA_FLAGS="-I$CUBLAS_INCLUDE" \
-  -DCMAKE_CXX_FLAGS="-I$CUBLAS_INCLUDE" \
-  -DCMAKE_INSTALL_PREFIX="$VLLM_SRC" \
-  -DCUDA_nvrtc_LIBRARY="$NVRTC_LIBRARY" \
-  -DNVCC_THREADS="$NVCC_THREADS" \
-  -DCMAKE_JOB_POOL_COMPILE:STRING=compile \
-  -DCMAKE_JOB_POOLS:STRING="compile=$MAX_JOBS"
-cmake --build "$VLLM_BUILD" --target _C_stable_libtorch -j "$MAX_JOBS"
-cmake --install "$VLLM_BUILD" \
-  --prefix "$VLLM_SRC" \
-  --component _C_stable_libtorch
+if [[ -f "$VLLM_BUILD/_C_stable_libtorch.abi3.so" ]]; then
+  cp "$VLLM_BUILD/_C_stable_libtorch.abi3.so" "$VLLM_SRC/vllm/"
+else
+  TORCH_CUDA_ARCH_LIST=10.0 cmake \
+    -S "$VLLM_SRC" \
+    -B "$VLLM_BUILD" \
+    -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DVLLM_TARGET_DEVICE=cuda \
+    -DVLLM_PYTHON_EXECUTABLE="$(command -v python3)" \
+    -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+    -DCMAKE_CUDA_FLAGS="-I$CUBLAS_INCLUDE" \
+    -DCMAKE_CXX_FLAGS="-I$CUBLAS_INCLUDE" \
+    -DCMAKE_INSTALL_PREFIX="$VLLM_SRC" \
+    -DCUDA_nvrtc_LIBRARY="$NVRTC_LIBRARY" \
+    -DNVCC_THREADS="$NVCC_THREADS" \
+    -DCMAKE_JOB_POOL_COMPILE:STRING=compile \
+    -DCMAKE_JOB_POOLS:STRING="compile=$MAX_JOBS"
+  cmake --build "$VLLM_BUILD" --target _C_stable_libtorch -j "$MAX_JOBS"
+  cmake --install "$VLLM_BUILD" \
+    --prefix "$VLLM_SRC" \
+    --component _C_stable_libtorch
+fi
 sha256sum "$VLLM_SRC"/vllm/_C_stable_libtorch*.so \
   | tee "$RESULTS/vllm-custom-extension.sha256"
 
