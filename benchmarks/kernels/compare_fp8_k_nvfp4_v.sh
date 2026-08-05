@@ -29,7 +29,7 @@ KEEPALIVE_PIDS="$ROOT/keepalive.pids"
 touch "$KEEPALIVE_FLAG"
 : >"$KEEPALIVE_PIDS"
 for gpu in 0 1 2 3; do
-  CUDA_VISIBLE_DEVICES="$gpu" python -c \
+  CUDA_VISIBLE_DEVICES="$gpu" python3 -c \
     'import os,sys,time,torch; flag=sys.argv[1]; x=torch.randn((2048,2048),device="cuda"); y=torch.randn_like(x); exec("while os.path.exists(flag):\n torch.mm(x,y)\n torch.cuda.synchronize()\n time.sleep(2)")' \
     "$KEEPALIVE_FLAG" >"$ROOT/keepalive-$gpu.log" 2>&1 &
   echo $! >>"$KEEPALIVE_PIDS"
@@ -44,7 +44,7 @@ stop_keepalive() {
 }
 trap stop_keepalive EXIT
 
-python -m pip install \
+python3 -m pip install \
   --upgrade pip 'setuptools>=77' wheel ninja cmake scikit-build-core
 
 git clone \
@@ -57,14 +57,14 @@ git clone \
 git -C "$SRC/flashinfer" rev-parse HEAD | tee "$RESULTS/flashinfer.sha"
 git -C "$VLLM_SRC" rev-parse HEAD | tee "$RESULTS/vllm.sha"
 
-python -m pip install --no-build-isolation --no-deps -e "$SRC/flashinfer"
-python -m pip install --no-build-isolation --no-deps -e "$VLLM_SRC"
-python -m pip install --no-build-isolation --no-deps -e "$SRC/flashinfer"
+python3 -m pip install --no-build-isolation --no-deps -e "$SRC/flashinfer"
+python3 -m pip install --no-build-isolation --no-deps -e "$VLLM_SRC"
+python3 -m pip install --no-build-isolation --no-deps -e "$SRC/flashinfer"
 
 stop_keepalive
 trap - EXIT
 
-python - <<'PY' | tee "$RESULTS/environment.txt"
+python3 - <<'PY' | tee "$RESULTS/environment.txt"
 import flashinfer
 import torch
 import vllm
@@ -209,7 +209,7 @@ cd "$VLLM_SRC"
 run_benchmarks native_trtllm true 8100
 run_benchmarks flashinfer_dequant false 8200
 
-python - "$RESULTS" <<'PY' | tee "$RESULTS/summary.csv"
+python3 - "$RESULTS" <<'PY' | tee "$RESULTS/summary.csv"
 import csv
 import json
 import pathlib
