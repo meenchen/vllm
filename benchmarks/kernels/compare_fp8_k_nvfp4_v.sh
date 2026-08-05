@@ -77,6 +77,12 @@ python3 -m pip install --no-build-isolation --no-deps -e "$VLLM_SRC"
 python3 -m pip install --no-build-isolation --no-deps -e "$SRC/flashinfer"
 
 VLLM_BUILD="$ROOT/vllm-build"
+NVRTC_LIBRARY="$(find \
+  /usr/local/lib/python3.12/dist-packages/nvidia \
+  /usr/local/cuda \
+  -name 'libnvrtc.so*' -print -quit 2>/dev/null || true)"
+test -n "$NVRTC_LIBRARY"
+printf '%s\n' "$NVRTC_LIBRARY" | tee "$RESULTS/nvrtc-library.txt"
 TORCH_CUDA_ARCH_LIST=10.0 cmake \
   -S "$VLLM_SRC" \
   -B "$VLLM_BUILD" \
@@ -86,6 +92,7 @@ TORCH_CUDA_ARCH_LIST=10.0 cmake \
   -DVLLM_PYTHON_EXECUTABLE="$(command -v python3)" \
   -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
   -DCMAKE_INSTALL_PREFIX="$VLLM_SRC" \
+  -DCUDA_nvrtc_LIBRARY="$NVRTC_LIBRARY" \
   -DNVCC_THREADS="$NVCC_THREADS" \
   -DCMAKE_JOB_POOL_COMPILE:STRING=compile \
   -DCMAKE_JOB_POOLS:STRING="compile=$MAX_JOBS"
