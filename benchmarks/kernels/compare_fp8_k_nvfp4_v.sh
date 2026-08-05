@@ -41,9 +41,11 @@ sha256sum "$MIXED_META" | tee "$RESULTS/flashinfer-mixed-metainfo.sha256"
 
 KEEPALIVE_FLAG="$ROOT/keepalive"
 KEEPALIVE_PIDS="$ROOT/keepalive.pids"
+NUM_GPUS="$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)"
+test "$NUM_GPUS" -gt 0
 touch "$KEEPALIVE_FLAG"
 : >"$KEEPALIVE_PIDS"
-for gpu in 0 1 2 3; do
+for gpu in $(seq 0 $((NUM_GPUS - 1))); do
   CUDA_VISIBLE_DEVICES="$gpu" python3 -c \
     'import os,sys,time,torch; flag=sys.argv[1]; x=torch.randn((2048,2048),device="cuda"); y=torch.randn_like(x); exec("while os.path.exists(flag):\n torch.mm(x,y)\n torch.cuda.synchronize()\n time.sleep(2)")' \
     "$KEEPALIVE_FLAG" >"$ROOT/keepalive-$gpu.log" 2>&1 &
@@ -169,7 +171,7 @@ SPARE_KEEPALIVE_PIDS="$ROOT/spare-keepalive.pids"
 start_spare_keepalive() {
   touch "$SPARE_KEEPALIVE_FLAG"
   : >"$SPARE_KEEPALIVE_PIDS"
-  for gpu in 1 2 3; do
+  for gpu in $(seq 1 $((NUM_GPUS - 1))); do
     CUDA_VISIBLE_DEVICES="$gpu" python3 -c \
       'import os,sys,time,torch; flag=sys.argv[1]; x=torch.randn((2048,2048),device="cuda"); y=torch.randn_like(x); exec("while os.path.exists(flag):\n torch.mm(x,y)\n torch.cuda.synchronize()\n time.sleep(2)")' \
       "$SPARE_KEEPALIVE_FLAG" >"$ROOT/spare-keepalive-$gpu.log" 2>&1 &
