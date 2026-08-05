@@ -62,13 +62,23 @@ python3 -m pip install \
   --upgrade pip 'setuptools>=77,<81' setuptools-scm setuptools-rust \
   wheel ninja cmake scikit-build-core build
 
-git clone \
-  --depth 1 \
-  --branch fp8-k-nvfp4-v-dequant-attention \
-  https://github.com/meenchen/flashinfer.git \
-  "$SRC/flashinfer"
-git -C "$SRC/flashinfer" submodule update \
-  --init --depth 1 3rdparty/cccl 3rdparty/cutlass
+attempt=1
+until git clone \
+    --depth 1 \
+    --branch fp8-k-nvfp4-v-dequant-attention \
+    https://github.com/meenchen/flashinfer.git \
+    "$SRC/flashinfer"; do
+  test "$attempt" -lt 5
+  attempt=$((attempt + 1))
+  sleep 10
+done
+attempt=1
+until git -C "$SRC/flashinfer" submodule update \
+    --init --depth 1 3rdparty/cccl 3rdparty/cutlass; do
+  test "$attempt" -lt 5
+  attempt=$((attempt + 1))
+  sleep 10
+done
 git -C "$SRC/flashinfer" rev-parse HEAD | tee "$RESULTS/flashinfer.sha"
 git -C "$VLLM_SRC" rev-parse HEAD | tee "$RESULTS/vllm.sha"
 
