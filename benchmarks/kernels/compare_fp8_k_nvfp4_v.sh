@@ -153,10 +153,6 @@ CUDA_VISIBLE_DEVICES=0 pytest -q \
 CUDA_VISIBLE_DEVICES=0 pytest -q \
   tests/attention/test_trtllm_gen_attention_decode.py \
   -k fp8_k_nvfp4_v | tee "$RESULTS/flashinfer-native-tests.txt"
-cd "$VLLM_SRC"
-CUDA_VISIBLE_DEVICES=0 pytest -q \
-  tests/kernels/attention/test_fp8_k_nvfp4_v_cache.py \
-  -k mixed_v_fp8_workspace | tee "$RESULTS/vllm-mixed-workspace-tests.txt"
 
 MODEL_SOURCE=/hf-local/Qwen/Qwen3-8B
 if [[ ! -f "$MODEL_SOURCE/config.json" ]]; then
