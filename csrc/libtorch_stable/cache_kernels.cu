@@ -772,7 +772,8 @@ void reshape_and_cache_flash(
       key.get_device_index());
   const cudaStream_t stream = get_current_cuda_stream();
 
-  if (kv_cache_dtype == "nvfp4" || kv_cache_dtype == "fp8_k_nvfp4_v") {
+  if (kv_cache_dtype == "nvfp4" || kv_cache_dtype == "fp8_k_nvfp4_v" ||
+      kv_cache_dtype == "fp8_k_nvfp4_v_linear_sf") {
 #if defined(ENABLE_NVFP4_SM100) || defined(ENABLE_NVFP4_SM120)
     // NVFP4 dispatch is compiled separately for SM100+.
     extern void reshape_and_cache_nvfp4_dispatch(

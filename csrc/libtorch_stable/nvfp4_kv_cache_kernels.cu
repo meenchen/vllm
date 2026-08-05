@@ -22,6 +22,7 @@
 #include "libtorch_stable/torch_utils.h"
 
 #include <string>
+#include <type_traits>
 
 namespace vllm {
 
@@ -178,7 +179,7 @@ __global__ void reshape_and_cache_nvfp4_kernel(
   }
 }
 
-template <typename scalar_t>
+template <typename scalar_t, bool SWIZZLE_V_SCALE>
 __global__ void reshape_and_cache_fp8_k_nvfp4_v_kernel(
     const scalar_t* __restrict__ key, const scalar_t* __restrict__ value,
     uint8_t* __restrict__ key_cache, uint8_t* __restrict__ value_data_cache,
@@ -262,12 +263,18 @@ __global__ void reshape_and_cache_fp8_k_nvfp4_v_kernel(
 #endif
 
     if (sf_out != nullptr) {
-      int swizzled = swizzle_scale_offset(token_offset, group, groups_per_head);
-      int swizzled_token = swizzled / groups_per_head;
-      int swizzled_group = swizzled % groups_per_head;
-      scale_block[head * scale_head_stride +
-                  swizzled_token * scale_token_stride + swizzled_group] =
-          sf_value;
+      if constexpr (SWIZZLE_V_SCALE) {
+        int swizzled =
+            swizzle_scale_offset(token_offset, group, groups_per_head);
+        int swizzled_token = swizzled / groups_per_head;
+        int swizzled_group = swizzled % groups_per_head;
+        scale_block[head * scale_head_stride +
+                    swizzled_token * scale_token_stride + swizzled_group] =
+            sf_value;
+      } else {
+        scale_block[head * scale_head_stride +
+                    token_offset * scale_token_stride + group] = sf_value;
+      }
     }
   }
 }
@@ -285,7 +292,9 @@ void reshape_and_cache_nvfp4_dispatch(
   int head_size = key.size(2);
   int data_dim = head_size / 2;
   int scale_dim = head_size / 16;
-  bool is_mixed = kv_cache_dtype == "fp8_k_nvfp4_v";
+  bool is_mixed = kv_cache_dtype == "fp8_k_nvfp4_v" ||
+                  kv_cache_dtype == "fp8_k_nvfp4_v_linear_sf";
+  bool linear_mixed_scale = kv_cache_dtype == "fp8_k_nvfp4_v_linear_sf";
 
   if (is_mixed) {
     int full_dim = head_size + data_dim + scale_dim;
@@ -358,17 +367,25 @@ void reshape_and_cache_nvfp4_dispatch(
     const cudaStream_t stream = get_current_cuda_stream();
     VLLM_STABLE_DISPATCH_HALF_TYPES(
         key.scalar_type(), "reshape_and_cache_fp8_k_nvfp4_v", [&] {
-          vllm::reshape_and_cache_fp8_k_nvfp4_v_kernel<scalar_t>
-              <<<dim3(num_tokens), dim3(num_threads), 0, stream>>>(
-                  key.const_data_ptr<scalar_t>(),
-                  value.const_data_ptr<scalar_t>(), base, value_data,
-                  value_scales, slot_mapping.const_data_ptr<int64_t>(),
-                  k_scale.const_data_ptr<float>(),
-                  v_scale.const_data_ptr<float>(), key.stride(0),
-                  value.stride(0), num_heads, head_size, block_size,
-                  page_stride, key_head_stride, key_token_stride, page_stride,
-                  value_head_stride, value_token_stride, page_stride,
-                  scale_head_stride, scale_token_stride);
+          auto launch = [&](auto swizzle_scale) {
+            constexpr bool swizzle = decltype(swizzle_scale)::value;
+            vllm::reshape_and_cache_fp8_k_nvfp4_v_kernel<scalar_t, swizzle>
+                <<<dim3(num_tokens), dim3(num_threads), 0, stream>>>(
+                    key.const_data_ptr<scalar_t>(),
+                    value.const_data_ptr<scalar_t>(), base, value_data,
+                    value_scales, slot_mapping.const_data_ptr<int64_t>(),
+                    k_scale.const_data_ptr<float>(),
+                    v_scale.const_data_ptr<float>(), key.stride(0),
+                    value.stride(0), num_heads, head_size, block_size,
+                    page_stride, key_head_stride, key_token_stride,
+                    page_stride, value_head_stride, value_token_stride,
+                    page_stride, scale_head_stride, scale_token_stride);
+          };
+          if (linear_mixed_scale) {
+            launch(std::false_type{});
+          } else {
+            launch(std::true_type{});
+          }
         });
     return;
   }

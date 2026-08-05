@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Attention layer with FlashInfer."""
 
+import math
 from dataclasses import dataclass
 from functools import partial
 from typing import ClassVar
@@ -45,6 +46,7 @@ from vllm.utils.math_utils import cdiv
 from vllm.utils.torch_utils import (
     PIN_MEMORY,
     canonicalize_singleton_dim_strides,
+    direct_register_custom_op,
     fp8_k_nvfp4_v_cache_split_views,
     is_quantized_kv_cache,
     is_strictly_contiguous,
@@ -87,6 +89,7 @@ FP4_DTYPE = torch.uint8
 logger = init_logger(__name__)
 
 trtllm_gen_workspace_buffer = None
+_mixed_xqa_semaphores: dict[torch.device, torch.Tensor] = {}
 _mixed_v_fp8_workspaces: dict[
     tuple[torch.device, tuple[int, ...], tuple[int, ...]], torch.Tensor
 ] = {}
@@ -113,6 +116,84 @@ def _get_mixed_v_fp8_workspace(k_cache: torch.Tensor) -> torch.Tensor:
         )
         _mixed_v_fp8_workspaces[key] = workspace
     return workspace
+
+
+def _get_mixed_xqa_semaphores(device: torch.device) -> torch.Tensor:
+    semaphores = _mixed_xqa_semaphores.get(device)
+    if semaphores is None:
+        semaphores = torch.zeros(1 << 16, dtype=torch.uint32, device=device)
+        _mixed_xqa_semaphores[device] = semaphores
+    return semaphores
+
+
+def _flashinfer_fp8_k_nvfp4_v_decode(
+    out: torch.Tensor,
+    query: torch.Tensor,
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    value_scale_cache: torch.Tensor,
+    block_tables: torch.Tensor,
+    seq_lens: torch.Tensor,
+    k_scale: torch.Tensor,
+    v_scale: torch.Tensor,
+    sinks: torch.Tensor | None,
+    workspace_buffer: torch.Tensor,
+    semaphores: torch.Tensor,
+    num_kv_heads: int,
+    page_size: int,
+    q_scale: float,
+    sm_count: int,
+) -> None:
+    from flashinfer.xqa import xqa
+
+    xqa(
+        query.unsqueeze(1),
+        key_cache,
+        value_cache,
+        block_tables,
+        seq_lens.view(torch.uint32).unsqueeze(1),
+        out.unsqueeze(1),
+        workspace_buffer,
+        semaphores,
+        num_kv_heads,
+        page_size,
+        sinks=(None if sinks is None else sinks.view(num_kv_heads, -1)),
+        q_scale=q_scale,
+        k_scale=k_scale,
+        v_scale=v_scale,
+        kv_layout=get_kv_cache_layout(),
+        sm_count=sm_count,
+        v_sf_cache=value_scale_cache,
+    )
+
+
+def _flashinfer_fp8_k_nvfp4_v_decode_fake(
+    out: torch.Tensor,
+    query: torch.Tensor,
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    value_scale_cache: torch.Tensor,
+    block_tables: torch.Tensor,
+    seq_lens: torch.Tensor,
+    k_scale: torch.Tensor,
+    v_scale: torch.Tensor,
+    sinks: torch.Tensor | None,
+    workspace_buffer: torch.Tensor,
+    semaphores: torch.Tensor,
+    num_kv_heads: int,
+    page_size: int,
+    q_scale: float,
+    sm_count: int,
+) -> None:
+    return
+
+
+direct_register_custom_op(
+    op_name="flashinfer_fp8_k_nvfp4_v_decode",
+    op_func=_flashinfer_fp8_k_nvfp4_v_decode,
+    mutates_args=["out", "workspace_buffer", "semaphores"],
+    fake_impl=_flashinfer_fp8_k_nvfp4_v_decode_fake,
+)
 
 
 @triton.jit
@@ -702,7 +783,9 @@ class FIPrefill:
 class FIDecode:
     """Metadata for the native FlashInfer decode pathway (non-TRTLLM)."""
 
-    wrapper: BatchDecodeWithPagedKVCacheWrapper
+    wrapper: BatchDecodeWithPagedKVCacheWrapper | None
+    block_tables: torch.Tensor | None = None
+    seq_lens: torch.Tensor | None = None
 
 
 @dataclass
@@ -966,6 +1049,12 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         self.window_left = self.global_hyperparameters.window_left
         self.logits_soft_cap = self.global_hyperparameters.logits_soft_cap
         self.has_sinks = self.global_hyperparameters.has_sinks
+        self.use_mixed_xqa_decode = (
+            self.is_kvcache_fp8_k_nvfp4_v
+            and self.dcp_world_size == 1
+            and self.window_left == -1
+            and not self.logits_soft_cap
+        )
         if self.has_sinks and not can_use_trtllm:
             raise NotImplementedError(
                 "FlashInfer backend currently does not support attention "
@@ -1269,6 +1358,17 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
             (num_prefills == 0 or prefill_use_trtllm)
             and (num_decodes == 0 or decode_use_trtllm)
         )
+        direct_mixed_decode = (
+            num_decodes > 0
+            and not decode_use_trtllm
+            and self.use_mixed_xqa_decode
+            and num_decode_tokens == num_decodes
+        )
+        needs_native_fi_metadata = (
+            use_cascade
+            or (num_prefills > 0 and not prefill_use_trtllm)
+            or (num_decodes > 0 and not decode_use_trtllm and not direct_mixed_decode)
+        )
 
         if not all_uses_trtllm:
             if self.has_sinks:
@@ -1318,7 +1418,7 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         # When all attention (both prefill and decode) uses TRTLLM,
         # seq_lens_cpu is not needed since TRTLLM paths use GPU tensors
         # (block_tables, seq_lens) directly.
-        needs_seq_lens_cpu = self.use_dcp or use_cascade or not all_uses_trtllm
+        needs_seq_lens_cpu = self.use_dcp or needs_native_fi_metadata
         seq_lens_cpu = common_attn_metadata.seq_lens_cpu if needs_seq_lens_cpu else None
         seq_lens_np = seq_lens_cpu.numpy() if seq_lens_cpu is not None else None
         num_blocks_np = (
@@ -1358,7 +1458,7 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         # Compute paged_kv_indices if necessary
         # paged_kv_indices is only needed for FlashInfer native paths;
         # TRTLLM paths use block_tables directly on GPU.
-        needs_paged_kv_indices = use_cascade or not all_uses_trtllm
+        needs_paged_kv_indices = needs_native_fi_metadata
         if needs_paged_kv_indices:
             assert num_blocks_np is not None
             assert seq_lens_np is not None
@@ -1372,7 +1472,7 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         else:
             paged_kv_indices = None
 
-        if self.is_kvcache_fp8_k_nvfp4_v and not all_uses_trtllm:
+        if self.is_kvcache_fp8_k_nvfp4_v and needs_paged_kv_indices:
             # Keep pointers and shapes stable for CUDA graph replay. The
             # active count is the last indptr entry for this fixed batch.
             attn_metadata.paged_kv_indices = self.paged_kv_indices.gpu
@@ -1555,6 +1655,12 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                     seq_lens=seq_lens[:num_decodes],
                     max_seq_len=max_seq_len,
                 )
+            elif direct_mixed_decode:
+                attn_metadata.decode = FIDecode(
+                    wrapper=None,
+                    block_tables=block_table_tensor[:num_decodes],
+                    seq_lens=seq_lens[:num_decodes],
+                )
             else:
                 assert seq_lens_cpu is not None
                 pure_decode = num_prefills == 0
@@ -1676,6 +1782,9 @@ class FlashInferImpl(AttentionImpl):
             self.sinks = sinks
 
         self.support_trtllm_attn = can_use_trtllm_attention(num_heads, num_kv_heads)
+        self._mixed_v_scales_linear = (
+            self.is_kvcache_fp8_k_nvfp4_v and not self.support_trtllm_attn
+        )
         vllm_config = get_current_vllm_config_or_none()
         self.supports_quant_query_input = (
             self.support_trtllm_attn
@@ -1697,6 +1806,20 @@ class FlashInferImpl(AttentionImpl):
             )
         else:
             self._nvfp4_fp8_out = None
+
+        self._mixed_xqa_workspace: torch.Tensor | None = None
+        self._mixed_xqa_semaphores: torch.Tensor | None = None
+        self._mixed_xqa_sm_count = 0
+        self._mixed_xqa_page_size = 0
+        if self.is_kvcache_fp8_k_nvfp4_v:
+            assert vllm_config is not None
+            device = torch.device("cuda", torch.cuda.current_device())
+            self._mixed_xqa_workspace = _get_trtllm_gen_workspace_buffer()
+            self._mixed_xqa_semaphores = _get_mixed_xqa_semaphores(device)
+            self._mixed_xqa_page_size = vllm_config.cache_config.block_size
+            self._mixed_xqa_sm_count = torch.cuda.get_device_properties(
+                device
+            ).multi_processor_count
 
         dcp_a2a = (
             vllm_config is not None
@@ -1771,6 +1894,11 @@ class FlashInferImpl(AttentionImpl):
 
         prefill_use_trtllm = isinstance(attn_metadata.prefill, TRTLLMPrefill)
         decode_use_trtllm = isinstance(attn_metadata.decode, TRTLLMDecode)
+        direct_mixed_decode = (
+            self.is_kvcache_fp8_k_nvfp4_v
+            and isinstance(attn_metadata.decode, FIDecode)
+            and attn_metadata.decode.wrapper is None
+        )
 
         # The attn+quant fusion happens when output_scale is provided.
         if output_scale is None:
@@ -1877,7 +2005,11 @@ class FlashInferImpl(AttentionImpl):
             packed_kv_block_scales = (None, value_scales)
             needs_mixed_flashinfer = (
                 num_prefill_tokens > 0 and not prefill_use_trtllm
-            ) or (num_decode_tokens > 0 and not decode_use_trtllm)
+            ) or (
+                num_decode_tokens > 0
+                and not decode_use_trtllm
+                and not direct_mixed_decode
+            )
             if needs_mixed_flashinfer:
                 assert attn_metadata.paged_kv_indices is not None
                 assert attn_metadata.num_paged_kv_indices is not None
@@ -1889,7 +2021,9 @@ class FlashInferImpl(AttentionImpl):
                     attn_metadata.num_paged_kv_indices,
                     value_fp8,
                     kv_layout=get_kv_cache_layout(),
-                    sf_layout="swizzled_4x4",
+                    sf_layout=(
+                        "linear" if self._mixed_v_scales_linear else "swizzled_4x4"
+                    ),
                 )
                 mixed_fp8_kv_cache = (key_data, value_fp8)
         elif self.is_kvcache_nvfp4:
@@ -2100,7 +2234,36 @@ class FlashInferImpl(AttentionImpl):
             decode_query = query[:num_decode_tokens]
             assert decode_query.shape[0] == num_decode_tokens
 
-            if not decode_use_trtllm:
+            if direct_mixed_decode:
+                assert isinstance(attn_metadata.decode, FIDecode)
+                assert attn_metadata.decode.block_tables is not None
+                assert attn_metadata.decode.seq_lens is not None
+                assert packed_kv_data is not None
+                assert packed_kv_block_scales is not None
+                assert self._mixed_xqa_workspace is not None
+                assert self._mixed_xqa_semaphores is not None
+                mixed_k_cache, mixed_v_cache = packed_kv_data
+                _, mixed_v_scales = packed_kv_block_scales
+                assert mixed_v_scales is not None
+                torch.ops.vllm.flashinfer_fp8_k_nvfp4_v_decode(
+                    output[:num_decode_tokens],
+                    decode_query,
+                    mixed_k_cache,
+                    mixed_v_cache,
+                    mixed_v_scales,
+                    attn_metadata.decode.block_tables,
+                    attn_metadata.decode.seq_lens,
+                    layer._k_scale,
+                    layer._v_scale,
+                    self.sinks,
+                    self._mixed_xqa_workspace,
+                    self._mixed_xqa_semaphores,
+                    self.num_kv_heads,
+                    self._mixed_xqa_page_size,
+                    self.scale * math.sqrt(self.head_size),
+                    self._mixed_xqa_sm_count,
+                )
+            elif not decode_use_trtllm:
                 assert isinstance(attn_metadata.decode, FIDecode)
                 decode_wrapper = attn_metadata.decode.wrapper
                 assert decode_wrapper is not None
@@ -2265,7 +2428,11 @@ class FlashInferImpl(AttentionImpl):
                     packed_cache,
                     packed_cache,
                     slot_mapping,
-                    self.kv_cache_dtype,
+                    (
+                        "fp8_k_nvfp4_v_linear_sf"
+                        if self._mixed_v_scales_linear
+                        else self.kv_cache_dtype
+                    ),
                     layer._k_scale,
                     layer._v_scale,
                 )

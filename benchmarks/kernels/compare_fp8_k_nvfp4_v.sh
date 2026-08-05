@@ -69,7 +69,7 @@ if [[ ! -d "$SRC/flashinfer/.git" ]]; then
   attempt=1
   until git clone \
       --depth 1 \
-      --branch fp8-k-nvfp4-v-dequant-attention \
+      --branch fp8-k-nvfp4-v-direct-xqa-current \
       https://github.com/meenchen/flashinfer.git \
       "$SRC/flashinfer"; do
     test "$attempt" -lt 5
@@ -145,14 +145,6 @@ print("device", torch.cuda.get_device_name(), torch.cuda.get_device_capability()
 print("flashinfer", flashinfer.__file__)
 print("vllm", vllm.__file__)
 PY
-
-cd "$SRC/flashinfer"
-CUDA_VISIBLE_DEVICES=0 pytest -q \
-  tests/utils/test_fp4_kv_quantization.py \
-  -k pages_to_fp8 | tee "$RESULTS/flashinfer-dequant-tests.txt"
-CUDA_VISIBLE_DEVICES=0 pytest -q \
-  tests/attention/test_trtllm_gen_attention_decode.py \
-  -k fp8_k_nvfp4_v | tee "$RESULTS/flashinfer-native-tests.txt"
 
 MODEL_SOURCE=/hf-local/Qwen/Qwen3-8B
 if [[ ! -f "$MODEL_SOURCE/config.json" ]]; then
@@ -277,11 +269,11 @@ run_benchmarks() {
 }
 
 cd "$VLLM_SRC"
-if [[ "${BENCH_IMPLEMENTATIONS:-all}" != "flashinfer_dequant" ]]; then
+if [[ "${BENCH_IMPLEMENTATIONS:-all}" != "flashinfer_direct_xqa" ]]; then
   run_benchmarks native_trtllm true 8100
 fi
 if [[ "${BENCH_IMPLEMENTATIONS:-all}" != "native_trtllm" ]]; then
-  run_benchmarks flashinfer_dequant false 8200
+  run_benchmarks flashinfer_direct_xqa false 8200
 fi
 
 python3 - "$RESULTS" <<'PY' | tee "$RESULTS/summary.csv"
@@ -301,7 +293,7 @@ metrics = [
     "mean_itl_ms",
 ]
 rows = []
-for implementation in ("native_trtllm", "flashinfer_dequant"):
+for implementation in ("native_trtllm", "flashinfer_direct_xqa"):
     for workload in ("short", "long"):
         runs = [
             json.loads(
