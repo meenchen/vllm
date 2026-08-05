@@ -217,6 +217,7 @@ run_benchmarks() {
   local implementation="$1"
   local use_trtllm="$2"
   local port="$3"
+  local kv_cache_dtype="$4"
   local server_log="$RESULTS/server-$implementation.log"
 
   CUDA_VISIBLE_DEVICES=0 VLLM_KV_CACHE_LAYOUT=HND \
@@ -225,7 +226,7 @@ run_benchmarks() {
     --host 127.0.0.1 \
     --port "$port" \
     --dtype bfloat16 \
-    --kv-cache-dtype fp8_k_nvfp4_v \
+    --kv-cache-dtype "$kv_cache_dtype" \
     --attention-backend FLASHINFER \
     --attention-config "{\"use_trtllm_attention\": $use_trtllm}" \
     --compilation-config '{"cudagraph_mode": "FULL_AND_PIECEWISE"}' \
@@ -325,12 +326,26 @@ start_spare_keepalive
 trap cleanup_all EXIT
 
 cd "$VLLM_SRC"
-if [[ "${BENCH_IMPLEMENTATIONS:-all}" != "flashinfer_direct_xqa" ]]; then
-  run_benchmarks native_trtllm true 8100
-fi
-if [[ "${BENCH_IMPLEMENTATIONS:-all}" != "native_trtllm" ]]; then
-  run_benchmarks flashinfer_direct_xqa false 8200
-fi
+case "${BENCH_IMPLEMENTATIONS:-all}" in
+  all)
+    run_benchmarks native_trtllm true 8100 fp8_k_nvfp4_v
+    run_benchmarks flashinfer_direct_xqa false 8200 fp8_k_nvfp4_v
+    run_benchmarks fp8_native_trtllm true 8300 fp8
+    ;;
+  native_trtllm)
+    run_benchmarks native_trtllm true 8100 fp8_k_nvfp4_v
+    ;;
+  flashinfer_direct_xqa)
+    run_benchmarks flashinfer_direct_xqa false 8200 fp8_k_nvfp4_v
+    ;;
+  fp8_native_trtllm)
+    run_benchmarks fp8_native_trtllm true 8300 fp8
+    ;;
+  *)
+    echo "Unknown BENCH_IMPLEMENTATIONS=${BENCH_IMPLEMENTATIONS}" >&2
+    exit 2
+    ;;
+esac
 
 python3 - "$RESULTS" <<'PY' | tee "$RESULTS/summary.csv"
 import csv
@@ -349,8 +364,14 @@ metrics = [
     "mean_itl_ms",
 ]
 rows = []
-for implementation in ("native_trtllm", "flashinfer_direct_xqa"):
+for implementation in (
+    "native_trtllm",
+    "flashinfer_direct_xqa",
+    "fp8_native_trtllm",
+):
     for workload in ("short", "long"):
+        if not (root / f"{implementation}-{workload}-r1.json").exists():
+            continue
         runs = [
             json.loads(
                 (root / f"{implementation}-{workload}-r{i}.json").read_text()
