@@ -65,10 +65,10 @@ python3 -m pip install \
 git clone \
   --depth 1 \
   --branch fp8-k-nvfp4-v-dequant-attention \
-  --recurse-submodules \
-  --shallow-submodules \
   https://github.com/meenchen/flashinfer.git \
   "$SRC/flashinfer"
+git -C "$SRC/flashinfer" submodule update \
+  --init --depth 1 3rdparty/cutlass
 git -C "$SRC/flashinfer" rev-parse HEAD | tee "$RESULTS/flashinfer.sha"
 git -C "$VLLM_SRC" rev-parse HEAD | tee "$RESULTS/vllm.sha"
 
