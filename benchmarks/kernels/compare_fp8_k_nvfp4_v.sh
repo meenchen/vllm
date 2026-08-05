@@ -210,11 +210,27 @@ run_benchmarks() {
     --model "$SERVED_MODEL" \
     --tokenizer "$MODEL_SOURCE" \
     --dataset-name random \
-    --num-prompts 16 \
+    --num-prompts 32 \
     --random-input-len 1024 \
-    --random-output-len 32 \
-    --max-concurrency 16 \
+    --random-output-len 64 \
+    --max-concurrency 32 \
     --request-rate inf \
+    --temperature 0 \
+    --ignore-eos \
+    --disable-tqdm
+
+  vllm bench serve \
+    --backend vllm \
+    --base-url "http://127.0.0.1:$port" \
+    --model "$SERVED_MODEL" \
+    --tokenizer "$MODEL_SOURCE" \
+    --dataset-name random \
+    --num-prompts 8 \
+    --random-input-len 16384 \
+    --random-output-len 64 \
+    --max-concurrency 8 \
+    --request-rate inf \
+    --temperature 0 \
     --ignore-eos \
     --disable-tqdm
 
@@ -230,6 +246,7 @@ run_benchmarks() {
       --random-output-len 256 \
       --max-concurrency 32 \
       --request-rate inf \
+      --temperature 0 \
       --ignore-eos \
       --disable-tqdm \
       --save-result \
@@ -251,6 +268,7 @@ run_benchmarks() {
       --random-output-len 256 \
       --max-concurrency 8 \
       --request-rate inf \
+      --temperature 0 \
       --ignore-eos \
       --disable-tqdm \
       --save-result \
