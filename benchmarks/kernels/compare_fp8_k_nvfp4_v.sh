@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="${1:?usage: $0 <lustre-work-dir>}"
 VLLM_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SRC="$ROOT/src"
-RESULTS="$ROOT/results"
+RESULTS="${RESULTS_DIR:-$ROOT/results}"
 CACHE="$ROOT/cache"
 MIXED_CUBIN_DIR="${MIXED_CUBIN_DIR:-/lustre/fsw/portfolios/coreai/users/weimingc/nano_v3_corrected_kv_comparison/runtime_mixed/cubins}"
 mkdir -p "$SRC" "$RESULTS" "$CACHE"
@@ -152,11 +152,37 @@ if [[ ! -f "$MODEL_SOURCE/config.json" ]]; then
 fi
 SERVED_MODEL=Qwen/Qwen3-8B
 SERVER_PID=""
+SPARE_KEEPALIVE_FLAG="$ROOT/spare-keepalive"
+SPARE_KEEPALIVE_PIDS="$ROOT/spare-keepalive.pids"
+
+start_spare_keepalive() {
+  touch "$SPARE_KEEPALIVE_FLAG"
+  : >"$SPARE_KEEPALIVE_PIDS"
+  for gpu in 1 2 3; do
+    CUDA_VISIBLE_DEVICES="$gpu" python3 -c \
+      'import os,sys,time,torch; flag=sys.argv[1]; x=torch.randn((2048,2048),device="cuda"); y=torch.randn_like(x); exec("while os.path.exists(flag):\n torch.mm(x,y)\n torch.cuda.synchronize()\n time.sleep(2)")' \
+      "$SPARE_KEEPALIVE_FLAG" >"$ROOT/spare-keepalive-$gpu.log" 2>&1 &
+    echo $! >>"$SPARE_KEEPALIVE_PIDS"
+  done
+}
+
+stop_spare_keepalive() {
+  rm -f "$SPARE_KEEPALIVE_FLAG"
+  while read -r pid; do
+    kill "$pid" 2>/dev/null || true
+  done <"$SPARE_KEEPALIVE_PIDS"
+  wait 2>/dev/null || true
+}
 
 cleanup_server() {
   if [[ -n "$SERVER_PID" ]]; then
     kill "$SERVER_PID" 2>/dev/null || true
   fi
+}
+
+cleanup_all() {
+  cleanup_server
+  stop_spare_keepalive
 }
 
 wait_for_server() {
@@ -196,7 +222,6 @@ run_benchmarks() {
     --max-num-seqs 64 \
     --gpu-memory-utilization 0.75 >"$server_log" 2>&1 &
   SERVER_PID=$!
-  trap cleanup_server EXIT
   wait_for_server "$port" "$server_log"
 
   curl -fsS "http://127.0.0.1:$port/v1/completions" \
@@ -283,8 +308,10 @@ run_benchmarks() {
   kill "$SERVER_PID"
   wait "$SERVER_PID" 2>/dev/null || true
   SERVER_PID=""
-  trap - EXIT
 }
+
+start_spare_keepalive
+trap cleanup_all EXIT
 
 cd "$VLLM_SRC"
 if [[ "${BENCH_IMPLEMENTATIONS:-all}" != "flashinfer_direct_xqa" ]]; then
@@ -335,3 +362,6 @@ grep -hE \
   'GPU KV cache size|Maximum concurrency|CUDAGraph|torch.compile|Available KV cache memory' \
   "$RESULTS"/server-*.log \
   >"$RESULTS/server-capacity-and-compile.txt" || true
+
+stop_spare_keepalive
+trap - EXIT
