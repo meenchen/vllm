@@ -22,7 +22,9 @@ export FLASHINFER_CUDA_ARCH_LIST="10.3a"
 export TORCH_CUDA_ARCH_LIST="10.3a"
 export VLLM_USE_PRECOMPILED=1
 export VLLM_PRECOMPILED_WHEEL_COMMIT=nightly
+export VLLM_CUTLASS_SRC_DIR="$SRC/flashinfer/3rdparty/cutlass"
 export MAX_JOBS=16
+export NVCC_THREADS=2
 export CMAKE_BUILD_PARALLEL_LEVEL=16
 mkdir -p \
   "$HOME" \
@@ -73,6 +75,26 @@ git -C "$VLLM_SRC" rev-parse HEAD | tee "$RESULTS/vllm.sha"
 python3 -m pip install --no-build-isolation --no-deps -e "$SRC/flashinfer"
 python3 -m pip install --no-build-isolation --no-deps -e "$VLLM_SRC"
 python3 -m pip install --no-build-isolation --no-deps -e "$SRC/flashinfer"
+
+VLLM_BUILD="$ROOT/vllm-build"
+TORCH_CUDA_ARCH_LIST=10.0 cmake \
+  -S "$VLLM_SRC" \
+  -B "$VLLM_BUILD" \
+  -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DVLLM_TARGET_DEVICE=cuda \
+  -DVLLM_PYTHON_EXECUTABLE="$(command -v python3)" \
+  -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+  -DCMAKE_INSTALL_PREFIX="$VLLM_SRC" \
+  -DNVCC_THREADS="$NVCC_THREADS" \
+  -DCMAKE_JOB_POOL_COMPILE:STRING=compile \
+  -DCMAKE_JOB_POOLS:STRING="compile=$MAX_JOBS"
+cmake --build "$VLLM_BUILD" --target _C_stable_libtorch -j "$MAX_JOBS"
+cmake --install "$VLLM_BUILD" \
+  --prefix "$VLLM_SRC" \
+  --component _C_stable_libtorch
+sha256sum "$VLLM_SRC"/vllm/_C_stable_libtorch*.so \
+  | tee "$RESULTS/vllm-custom-extension.sha256"
 
 stop_keepalive
 trap - EXIT
