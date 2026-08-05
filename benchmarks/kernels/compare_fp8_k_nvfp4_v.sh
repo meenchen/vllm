@@ -7,6 +7,7 @@ SRC="$ROOT/src"
 RESULTS="${RESULTS_DIR:-$ROOT/results}"
 CACHE="$ROOT/cache"
 MIXED_CUBIN_DIR="${MIXED_CUBIN_DIR:-/lustre/fsw/portfolios/coreai/users/weimingc/nano_v3_corrected_kv_comparison/runtime_mixed/cubins}"
+FLASHINFER_SOURCE_BRANCH="${FLASHINFER_SOURCE_BRANCH:-fp8-k-nvfp4-v-direct-xqa-current}"
 mkdir -p "$SRC" "$RESULTS" "$CACHE"
 
 export HOME="$CACHE/home"
@@ -69,7 +70,7 @@ if [[ ! -d "$SRC/flashinfer/.git" ]]; then
   attempt=1
   until git clone \
       --depth 1 \
-      --branch fp8-k-nvfp4-v-direct-xqa-current \
+      --branch "$FLASHINFER_SOURCE_BRANCH" \
       https://github.com/meenchen/flashinfer.git \
       "$SRC/flashinfer"; do
     test "$attempt" -lt 5
@@ -81,7 +82,7 @@ attempt=1
 until git -C "$SRC/flashinfer" fetch \
     --depth 1 \
     https://github.com/meenchen/flashinfer.git \
-    fp8-k-nvfp4-v-direct-xqa-current; do
+    "$FLASHINFER_SOURCE_BRANCH"; do
   test "$attempt" -lt 5
   attempt=$((attempt + 1))
   sleep 10
