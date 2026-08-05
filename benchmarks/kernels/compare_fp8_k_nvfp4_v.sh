@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="${1:?usage: $0 <lustre-work-dir>}"
-VLLM_SRC="$(git rev-parse --show-toplevel)"
+VLLM_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SRC="$ROOT/src"
 RESULTS="$ROOT/results"
 CACHE="$ROOT/cache"
