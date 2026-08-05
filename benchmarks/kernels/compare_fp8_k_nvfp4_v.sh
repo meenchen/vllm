@@ -15,6 +15,8 @@ export VLLM_CACHE_ROOT="$CACHE/vllm"
 export FLASHINFER_WORKSPACE_BASE="$CACHE/flashinfer"
 export FLASHINFER_CUDA_ARCH_LIST="10.3a"
 export TORCH_CUDA_ARCH_LIST="10.3a"
+export VLLM_USE_PRECOMPILED=1
+export VLLM_PRECOMPILED_WHEEL_COMMIT=nightly
 export MAX_JOBS=16
 export CMAKE_BUILD_PARALLEL_LEVEL=16
 mkdir -p \
@@ -45,7 +47,8 @@ stop_keepalive() {
 trap stop_keepalive EXIT
 
 python3 -m pip install \
-  --upgrade pip 'setuptools>=77' wheel ninja cmake scikit-build-core
+  --upgrade pip 'setuptools>=77,<81' setuptools-scm setuptools-rust \
+  wheel ninja cmake scikit-build-core build
 
 git clone \
   --depth 1 \
