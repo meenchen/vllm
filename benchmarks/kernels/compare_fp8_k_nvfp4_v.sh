@@ -61,6 +61,9 @@ trap stop_keepalive EXIT
 python3 -m pip install \
   --upgrade pip 'setuptools>=77,<81' setuptools-scm setuptools-rust \
   wheel ninja cmake scikit-build-core build
+# The nightly image carries FlashInfer 0.6.13 AOT modules. They are ABI
+# incompatible with this source checkout and would otherwise shadow its JIT.
+python3 -m pip uninstall -y flashinfer-jit-cache || true
 
 attempt=1
 until git clone \
