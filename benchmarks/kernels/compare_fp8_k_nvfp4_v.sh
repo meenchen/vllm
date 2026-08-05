@@ -6,6 +6,7 @@ VLLM_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SRC="$ROOT/src"
 RESULTS="$ROOT/results"
 CACHE="$ROOT/cache"
+MIXED_CUBIN_DIR="${MIXED_CUBIN_DIR:-/lustre/fsw/portfolios/coreai/users/weimingc/nano_v3_corrected_kv_comparison/runtime_mixed/cubins}"
 mkdir -p "$SRC" "$RESULTS" "$CACHE"
 
 export HOME="$CACHE/home"
@@ -13,9 +14,14 @@ export HF_HOME="$CACHE/huggingface"
 export XDG_CACHE_HOME="$CACHE/xdg"
 export VLLM_CACHE_ROOT="$CACHE/vllm"
 export FLASHINFER_WORKSPACE_BASE="$CACHE/flashinfer"
+export FLASHINFER_CUBIN_DIR="$MIXED_CUBIN_DIR"
+export FLASHINFER_CUBIN_CHECKSUM_DISABLED=1
 export FLASHINFER_DISABLE_VERSION_CHECK=1
+export FLASHINFER_NO_DOWNLOAD=1
 export FLASHINFER_CUDA_ARCH_LIST="10.3a"
 export TORCH_CUDA_ARCH_LIST="10.3a"
+export NVIDIA_CUDA_INCLUDE=/usr/local/lib/python3.12/dist-packages/nvidia/cu13/include
+export CPATH="$NVIDIA_CUDA_INCLUDE${CPATH:+:$CPATH}"
 export VLLM_USE_PRECOMPILED=1
 export VLLM_PRECOMPILED_WHEEL_COMMIT=nightly
 export MAX_JOBS=16
@@ -26,6 +32,11 @@ mkdir -p \
   "$XDG_CACHE_HOME" \
   "$VLLM_CACHE_ROOT" \
   "$FLASHINFER_WORKSPACE_BASE"
+
+MIXED_META="$MIXED_CUBIN_DIR/158f6fa11ef139a098cfddcdddce73ca99d164ad/fmha/trtllm-gen/include/flashInferMetaInfo.h"
+test -f "$MIXED_META"
+printf '%s\n' "$MIXED_CUBIN_DIR" | tee "$RESULTS/flashinfer-cubin-dir.txt"
+sha256sum "$MIXED_META" | tee "$RESULTS/flashinfer-mixed-metainfo.sha256"
 
 KEEPALIVE_FLAG="$ROOT/keepalive"
 KEEPALIVE_PIDS="$ROOT/keepalive.pids"
