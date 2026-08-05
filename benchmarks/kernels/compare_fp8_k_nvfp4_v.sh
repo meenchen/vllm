@@ -76,14 +76,24 @@ if [[ ! -d "$SRC/flashinfer/.git" ]]; then
     attempt=$((attempt + 1))
     sleep 10
   done
-  attempt=1
-  until git -C "$SRC/flashinfer" submodule update \
-      --init --depth 1 3rdparty/cccl 3rdparty/cutlass; do
-    test "$attempt" -lt 5
-    attempt=$((attempt + 1))
-    sleep 10
-  done
 fi
+attempt=1
+until git -C "$SRC/flashinfer" fetch \
+    --depth 1 \
+    https://github.com/meenchen/flashinfer.git \
+    fp8-k-nvfp4-v-direct-xqa-current; do
+  test "$attempt" -lt 5
+  attempt=$((attempt + 1))
+  sleep 10
+done
+git -C "$SRC/flashinfer" checkout --detach FETCH_HEAD
+attempt=1
+until git -C "$SRC/flashinfer" submodule update \
+    --init --depth 1 3rdparty/cccl 3rdparty/cutlass; do
+  test "$attempt" -lt 5
+  attempt=$((attempt + 1))
+  sleep 10
+done
 git -C "$SRC/flashinfer" rev-parse HEAD | tee "$RESULTS/flashinfer.sha"
 git -C "$VLLM_SRC" rev-parse HEAD | tee "$RESULTS/vllm.sha"
 
