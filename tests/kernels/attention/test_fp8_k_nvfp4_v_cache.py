@@ -9,8 +9,26 @@ import torch
 from vllm.platforms import current_platform
 from vllm.utils.torch_utils import fp8_k_nvfp4_v_cache_split_views
 from vllm.v1.attention.backends.flashinfer import (
+    _get_mixed_v_fp8_workspace,
     trtllm_prefill_attn_fp8_k_nvfp4_v_unpack,
 )
+
+
+def test_mixed_v_fp8_workspace_matches_key_strides() -> None:
+    head_size = 128
+    full_dim = head_size + head_size // 2 + head_size // 16
+    packed_cache = torch.empty(
+        (2, 1, 4, 64, full_dim), dtype=torch.uint8, device="cuda"
+    )
+    key_cache, _, _ = fp8_k_nvfp4_v_cache_split_views(
+        packed_cache[:, 0], head_size
+    )
+
+    value_workspace = _get_mixed_v_fp8_workspace(key_cache)
+
+    assert value_workspace.shape == key_cache.shape
+    assert value_workspace.stride() == key_cache.stride()
+    assert value_workspace.dtype == current_platform.fp8_dtype()
 
 
 @pytest.mark.skipif(

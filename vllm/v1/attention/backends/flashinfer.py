@@ -87,7 +87,9 @@ FP4_DTYPE = torch.uint8
 logger = init_logger(__name__)
 
 trtllm_gen_workspace_buffer = None
-_mixed_v_fp8_workspaces: dict[tuple[torch.device, tuple[int, ...]], torch.Tensor] = {}
+_mixed_v_fp8_workspaces: dict[
+    tuple[torch.device, tuple[int, ...], tuple[int, ...]], torch.Tensor
+] = {}
 
 
 def _get_trtllm_gen_workspace_buffer():
@@ -100,11 +102,12 @@ def _get_trtllm_gen_workspace_buffer():
 
 
 def _get_mixed_v_fp8_workspace(k_cache: torch.Tensor) -> torch.Tensor:
-    key = (k_cache.device, tuple(k_cache.shape))
+    key = (k_cache.device, tuple(k_cache.shape), tuple(k_cache.stride()))
     workspace = _mixed_v_fp8_workspaces.get(key)
     if workspace is None:
-        workspace = torch.empty(
+        workspace = torch.empty_strided(
             k_cache.shape,
+            k_cache.stride(),
             dtype=FP8_DTYPE,
             device=k_cache.device,
         )
