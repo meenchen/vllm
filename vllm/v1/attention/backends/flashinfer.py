@@ -1810,13 +1810,11 @@ class FlashInferImpl(AttentionImpl):
         self._mixed_xqa_workspace: torch.Tensor | None = None
         self._mixed_xqa_semaphores: torch.Tensor | None = None
         self._mixed_xqa_sm_count = 0
-        self._mixed_xqa_page_size = 0
         if self.is_kvcache_fp8_k_nvfp4_v:
             assert vllm_config is not None
             device = torch.device("cuda", torch.cuda.current_device())
             self._mixed_xqa_workspace = _get_trtllm_gen_workspace_buffer()
             self._mixed_xqa_semaphores = _get_mixed_xqa_semaphores(device)
-            self._mixed_xqa_page_size = vllm_config.cache_config.block_size
             self._mixed_xqa_sm_count = torch.cuda.get_device_properties(
                 device
             ).multi_processor_count
@@ -2259,7 +2257,7 @@ class FlashInferImpl(AttentionImpl):
                     self._mixed_xqa_workspace,
                     self._mixed_xqa_semaphores,
                     self.num_kv_heads,
-                    self._mixed_xqa_page_size,
+                    mixed_k_cache.shape[-2],
                     self.scale * math.sqrt(self.head_size),
                     self._mixed_xqa_sm_count,
                 )
