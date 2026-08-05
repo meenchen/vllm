@@ -68,7 +68,7 @@ git clone \
   https://github.com/meenchen/flashinfer.git \
   "$SRC/flashinfer"
 git -C "$SRC/flashinfer" submodule update \
-  --init --depth 1 3rdparty/cutlass
+  --init --depth 1 3rdparty/cccl 3rdparty/cutlass
 git -C "$SRC/flashinfer" rev-parse HEAD | tee "$RESULTS/flashinfer.sha"
 git -C "$VLLM_SRC" rev-parse HEAD | tee "$RESULTS/vllm.sha"
 
