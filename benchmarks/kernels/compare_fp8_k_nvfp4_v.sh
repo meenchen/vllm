@@ -125,6 +125,7 @@ NVRTC_LIBRARY="$(find \
   -name 'libnvrtc.so*' -print -quit 2>/dev/null || true)"
 test -n "$NVRTC_LIBRARY"
 printf '%s\n' "$NVRTC_LIBRARY" | tee "$RESULTS/nvrtc-library.txt"
+git --version
 if [[ -f "$VLLM_BUILD/_C_stable_libtorch.abi3.so" ]]; then
   cp "$VLLM_BUILD/_C_stable_libtorch.abi3.so" "$VLLM_SRC/vllm/"
 else
@@ -138,6 +139,7 @@ else
     -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
     -DCMAKE_CUDA_FLAGS="-I$CUBLAS_INCLUDE" \
     -DCMAKE_CXX_FLAGS="-I$CUBLAS_INCLUDE" \
+    -DGIT_EXECUTABLE="$(command -v git)" \
     -DCMAKE_INSTALL_PREFIX="$VLLM_SRC" \
     -DCUDA_nvrtc_LIBRARY="$NVRTC_LIBRARY" \
     -DNVCC_THREADS="$NVCC_THREADS" \
