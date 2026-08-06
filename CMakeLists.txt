@@ -31,6 +31,8 @@ endif()
 
 # CUDA by default, can be overridden by using -DVLLM_TARGET_DEVICE=... (used by setup.py)
 set(VLLM_TARGET_DEVICE "cuda" CACHE STRING "Target device backend for vLLM")
+option(VLLM_SKIP_OPTIONAL_EXTERNAL_PROJECTS
+  "Skip optional external projects for targeted extension builds" OFF)
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "Target device: ${VLLM_TARGET_DEVICE}")
 
@@ -1401,18 +1403,20 @@ if (VLLM_GPU_LANG STREQUAL "HIP")
   vllm_finalize_hipify_target()
 endif()
 
-# For CUDA and HIP builds also build the triton_kernels external package.
-if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
-    include(cmake/external_projects/triton_kernels.cmake)
+if(NOT VLLM_SKIP_OPTIONAL_EXTERNAL_PROJECTS)
+  # For CUDA and HIP builds also build the triton_kernels external package.
+  if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
+      include(cmake/external_projects/triton_kernels.cmake)
+  endif()
+
+  # For CUDA we also build and ship some external projects.
+  if (VLLM_GPU_LANG STREQUAL "CUDA")
+      include(cmake/external_projects/deepgemm.cmake)
+      include(cmake/external_projects/fmha_sm100.cmake)
+      include(cmake/external_projects/flashmla.cmake)
+      include(cmake/external_projects/qutlass.cmake)
+
+      # vllm-flash-attn should be last as it overwrites some CMake functions
+      include(cmake/external_projects/vllm_flash_attn.cmake)
+  endif ()
 endif()
-
-# For CUDA we also build and ship some external projects.
-if (VLLM_GPU_LANG STREQUAL "CUDA")
-    include(cmake/external_projects/deepgemm.cmake)
-    include(cmake/external_projects/fmha_sm100.cmake)
-    include(cmake/external_projects/flashmla.cmake)
-    include(cmake/external_projects/qutlass.cmake)
-
-    # vllm-flash-attn should be last as it overwrites some CMake functions
-    include(cmake/external_projects/vllm_flash_attn.cmake)
-endif ()
