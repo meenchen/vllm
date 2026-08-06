@@ -130,8 +130,12 @@ def comparisons(
                 if baseline is None or column not in row or column not in baseline:
                     item[delta_column] = ""
                 else:
+                    baseline_value = float(baseline[column])
+                    if baseline_value == 0.0:
+                        item[delta_column] = ""
+                        continue
                     item[delta_column] = percentage_delta(
-                        float(row[column]), float(baseline[column])
+                        float(row[column]), baseline_value
                     )
         output.append(item)
     return output

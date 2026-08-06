@@ -135,3 +135,11 @@ def test_aggregate_rejects_duplicate_repetitions(tmp_path):
 
     with pytest.raises(ValueError, match="Duplicate repetitions"):
         aggregate(find_results([tmp_path]))
+
+
+def test_compare_omits_delta_for_zero_baseline():
+    baseline = aggregate([make_result("fp8_kv", 1, 0)])
+    compared = comparisons(baseline, "fp8_kv", "nvfp4_kv")
+
+    assert compared[0]["output_throughput_median"] == 0
+    assert compared[0]["output_throughput_delta_vs_fp8_pct"] == ""
