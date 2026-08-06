@@ -82,6 +82,11 @@ def aggregate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     summary = []
     for (implementation, workload), runs in sorted(groups.items()):
+        repeats = [int(run["repeat"]) for run in runs]
+        if len(repeats) != len(set(repeats)):
+            raise ValueError(
+                f"Duplicate repetitions for {implementation}/{workload}: {repeats}"
+            )
         first = runs[0]
         item: dict[str, Any] = {
             "implementation": implementation,

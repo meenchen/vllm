@@ -124,3 +124,14 @@ def test_aggregate_and_compare(tmp_path):
     assert mixed["output_throughput_median"] == 100
     assert mixed["output_throughput_delta_vs_fp8_pct"] == pytest.approx(-100 / 11)
     assert mixed["output_throughput_delta_vs_nvfp4_pct"] == pytest.approx(100 / 9)
+
+
+def test_aggregate_rejects_duplicate_repetitions(tmp_path):
+    for directory_name in ("first", "second"):
+        directory = tmp_path / directory_name
+        directory.mkdir()
+        path = directory / "result-d4_short_c64-r1.json"
+        path.write_text(json.dumps(make_result("native_mixed", 1, 100)))
+
+    with pytest.raises(ValueError, match="Duplicate repetitions"):
+        aggregate(find_results([tmp_path]))

@@ -53,6 +53,10 @@ Aggregate independently produced runs:
   --output-dir /lustre/path/summary
 ```
 
+Resume an interrupted implementation with the same arguments and `--resume`.
+Existing files are validated before they are skipped. The aggregator rejects
+duplicate implementation/workload/repeat tuples across result roots.
+
 Use the same model, weight dtype, hardware, tensor parallelism, source
 commits, container, server flags, and workload manifest for every comparison.
 Report medians with min/max across five repeats. Capacity-limit runs are a

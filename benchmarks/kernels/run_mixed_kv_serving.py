@@ -82,6 +82,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--require-optimized", action=argparse.BooleanOptionalAction, default=True
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Keep validated result files and run only missing repetitions.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -330,6 +335,7 @@ def main() -> int:
         "served_model_name": args.served_model_name,
         "tokenizer": args.tokenizer,
         "repeats": args.repeats,
+        "resume": args.resume,
         "workloads": [asdict(workload) for workload in workloads],
         "server_command": server_command,
         "flashinfer_xqa_mixed_fp8_mma": implementation.flashinfer_fp8_bmm,
@@ -370,6 +376,12 @@ def main() -> int:
         for repeat in range(1, args.repeats + 1):
             ordered = workloads if repeat % 2 else list(reversed(workloads))
             for workload in ordered:
+                result_path = (
+                    args.result_dir / f"result-{workload.workload}-r{repeat}.json"
+                )
+                if args.resume and result_path.exists():
+                    validate_result(result_path, workload)
+                    continue
                 command = build_benchmark_command(args, workload, repeat)
                 log_path = args.result_dir / (
                     f"benchmark-{workload.workload}-r{repeat}.log"
@@ -382,10 +394,7 @@ def main() -> int:
                         env=env,
                         check=True,
                     )
-                validate_result(
-                    args.result_dir / f"result-{workload.workload}-r{repeat}.json",
-                    workload,
-                )
+                validate_result(result_path, workload)
     finally:
         if process is not None:
             stop_server(process)

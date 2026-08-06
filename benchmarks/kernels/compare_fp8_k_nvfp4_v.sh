@@ -215,6 +215,9 @@ run_benchmarks() {
   if [[ -n "${MAX_NUM_BATCHED_TOKENS:-}" ]]; then
     args+=(--max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS")
   fi
+  if [[ "${BENCH_RESUME:-0}" == "1" ]]; then
+    args+=(--resume)
+  fi
   if [[ -n "${BENCH_WORKLOADS:-}" ]]; then
     local workload
     local -a workloads
