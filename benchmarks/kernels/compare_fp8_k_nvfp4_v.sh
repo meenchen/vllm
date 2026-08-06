@@ -166,12 +166,11 @@ print("flashinfer", flashinfer.__file__)
 print("vllm", vllm.__file__)
 PY
 
-MODEL_SOURCE=/hf-local/Qwen/Qwen3-8B
+MODEL_SOURCE="${MODEL_SOURCE:-/hf-local/Qwen/Qwen3-8B}"
 if [[ ! -f "$MODEL_SOURCE/config.json" ]]; then
-  MODEL_SOURCE=Qwen/Qwen3-8B
+  MODEL_SOURCE="${MODEL:-Qwen/Qwen3-8B}"
 fi
-SERVED_MODEL=Qwen/Qwen3-8B
-SERVER_PID=""
+SERVED_MODEL="${SERVED_MODEL:-${MODEL:-Qwen/Qwen3-8B}}"
 SPARE_KEEPALIVE_FLAG="$ROOT/spare-keepalive"
 SPARE_KEEPALIVE_PIDS="$ROOT/spare-keepalive.pids"
 
@@ -194,161 +193,69 @@ stop_spare_keepalive() {
   wait 2>/dev/null || true
 }
 
-cleanup_server() {
-  if [[ -n "$SERVER_PID" ]]; then
-    kill "$SERVER_PID" 2>/dev/null || true
-  fi
-}
-
 cleanup_all() {
-  cleanup_server
   stop_spare_keepalive
-}
-
-wait_for_server() {
-  local port="$1"
-  local log="$2"
-  for _ in $(seq 1 360); do
-    if curl -fsS "http://127.0.0.1:$port/health" >/dev/null; then
-      return 0
-    fi
-    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-      tail -200 "$log"
-      return 1
-    fi
-    sleep 5
-  done
-  tail -200 "$log"
-  return 1
 }
 
 run_benchmarks() {
   local implementation="$1"
-  local use_trtllm="$2"
-  local port="$3"
-  local kv_cache_dtype="$4"
-  local server_log="$RESULTS/server-$implementation.log"
-
-  CUDA_VISIBLE_DEVICES=0 VLLM_KV_CACHE_LAYOUT=HND \
-    vllm serve "$MODEL_SOURCE" \
-    --served-model-name "$SERVED_MODEL" \
-    --host 127.0.0.1 \
-    --port "$port" \
-    --dtype bfloat16 \
-    --kv-cache-dtype "$kv_cache_dtype" \
-    --attention-backend FLASHINFER \
-    --attention-config "{\"use_trtllm_attention\": $use_trtllm}" \
-    --compilation-config '{"cudagraph_mode": "FULL_AND_PIECEWISE"}' \
-    --max-model-len 32768 \
-    --max-num-seqs 64 \
-    --gpu-memory-utilization 0.75 >"$server_log" 2>&1 &
-  SERVER_PID=$!
-  wait_for_server "$port" "$server_log"
-
-  curl -fsS "http://127.0.0.1:$port/v1/completions" \
-    -H 'Content-Type: application/json' \
-    -d "{\"model\":\"$SERVED_MODEL\",\"prompt\":\"The capital of France is\",\"max_tokens\":16,\"temperature\":0}" \
-    | tee "$RESULTS/correctness-$implementation.json"
-
-  vllm bench serve \
-    --backend vllm \
-    --base-url "http://127.0.0.1:$port" \
-    --model "$SERVED_MODEL" \
-    --tokenizer "$MODEL_SOURCE" \
-    --dataset-name random \
-    --num-prompts 32 \
-    --random-input-len 1024 \
-    --random-output-len 64 \
-    --max-concurrency 32 \
-    --request-rate inf \
-    --temperature 0 \
-    --ignore-eos \
-    --disable-tqdm
-
-  vllm bench serve \
-    --backend vllm \
-    --base-url "http://127.0.0.1:$port" \
-    --model "$SERVED_MODEL" \
-    --tokenizer "$MODEL_SOURCE" \
-    --dataset-name random \
-    --num-prompts 8 \
-    --random-input-len 16384 \
-    --random-output-len 64 \
-    --max-concurrency 8 \
-    --request-rate inf \
-    --temperature 0 \
-    --ignore-eos \
-    --disable-tqdm
-
-  for repeat in 1 2 3; do
-    vllm bench serve \
-      --backend vllm \
-      --base-url "http://127.0.0.1:$port" \
-      --model "$SERVED_MODEL" \
-      --tokenizer "$MODEL_SOURCE" \
-      --dataset-name random \
-      --num-prompts 128 \
-      --random-input-len 1024 \
-      --random-output-len 256 \
-      --max-concurrency 32 \
-      --request-rate inf \
-      --temperature 0 \
-      --ignore-eos \
-      --disable-tqdm \
-      --save-result \
-      --result-dir "$RESULTS" \
-      --result-filename "$implementation-short-r$repeat.json" \
-      --metadata \
-      implementation="$implementation" \
-      workload=short \
-      repeat="$repeat"
-
-    vllm bench serve \
-      --backend vllm \
-      --base-url "http://127.0.0.1:$port" \
-      --model "$SERVED_MODEL" \
-      --tokenizer "$MODEL_SOURCE" \
-      --dataset-name random \
-      --num-prompts 32 \
-      --random-input-len 16384 \
-      --random-output-len 256 \
-      --max-concurrency 8 \
-      --request-rate inf \
-      --temperature 0 \
-      --ignore-eos \
-      --disable-tqdm \
-      --save-result \
-      --result-dir "$RESULTS" \
-      --result-filename "$implementation-long-r$repeat.json" \
-      --metadata \
-      implementation="$implementation" \
-      workload=long \
-      repeat="$repeat"
-  done
-
-  kill "$SERVER_PID"
-  wait "$SERVER_PID" 2>/dev/null || true
-  SERVER_PID=""
+  local implementation_results="$RESULTS/$implementation"
+  local args=(
+    --model "$MODEL_SOURCE"
+    --served-model-name "$SERVED_MODEL"
+    --tokenizer "$MODEL_SOURCE"
+    --implementation "$implementation"
+    --result-dir "$implementation_results"
+    --repeats "${BENCH_REPEATS:-5}"
+    --tensor-parallel-size "${TENSOR_PARALLEL_SIZE:-1}"
+    --max-model-len "${MAX_MODEL_LEN:-40960}"
+    --max-num-seqs "${MAX_NUM_SEQS:-64}"
+    --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.9}"
+  )
+  if [[ -n "${MAX_NUM_BATCHED_TOKENS:-}" ]]; then
+    args+=(--max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS")
+  fi
+  if [[ -n "${BENCH_WORKLOADS:-}" ]]; then
+    local workload
+    local -a workloads
+    IFS=',' read -ra workloads <<<"$BENCH_WORKLOADS"
+    for workload in "${workloads[@]}"; do
+      args+=(--workload "$workload")
+    done
+  fi
+  CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}" \
+    python3 "$VLLM_SRC/benchmarks/kernels/run_mixed_kv_serving.py" \
+    "${args[@]}"
 }
 
 start_spare_keepalive
 trap cleanup_all EXIT
 
 cd "$VLLM_SRC"
-case "${BENCH_IMPLEMENTATIONS:-all}" in
+case "${BENCH_IMPLEMENTATIONS:-methods}" in
   all)
-    run_benchmarks native_trtllm true 8100 fp8_k_nvfp4_v
-    run_benchmarks flashinfer_direct_xqa false 8200 fp8_k_nvfp4_v
-    run_benchmarks fp8_native_trtllm true 8300 fp8
+    run_benchmarks native_mixed
+    run_benchmarks flashinfer_fp8_bmm
+    run_benchmarks flashinfer_bf16_bmm
+    run_benchmarks fp8_kv
+    run_benchmarks nvfp4_kv
+    ;;
+  methods)
+    run_benchmarks native_mixed
+    run_benchmarks flashinfer_fp8_bmm
+    run_benchmarks flashinfer_bf16_bmm
+    ;;
+  native_mixed | flashinfer_fp8_bmm | flashinfer_bf16_bmm | fp8_kv | nvfp4_kv)
+    run_benchmarks "${BENCH_IMPLEMENTATIONS}"
     ;;
   native_trtllm)
-    run_benchmarks native_trtllm true 8100 fp8_k_nvfp4_v
+    run_benchmarks native_mixed
     ;;
   flashinfer_direct_xqa)
-    run_benchmarks flashinfer_direct_xqa false 8200 fp8_k_nvfp4_v
+    run_benchmarks flashinfer_fp8_bmm
     ;;
   fp8_native_trtllm)
-    run_benchmarks fp8_native_trtllm true 8300 fp8
+    run_benchmarks fp8_kv
     ;;
   *)
     echo "Unknown BENCH_IMPLEMENTATIONS=${BENCH_IMPLEMENTATIONS}" >&2
@@ -356,52 +263,13 @@ case "${BENCH_IMPLEMENTATIONS:-all}" in
     ;;
 esac
 
-python3 - "$RESULTS" <<'PY' | tee "$RESULTS/summary.csv"
-import csv
-import json
-import pathlib
-import statistics
-import sys
-
-root = pathlib.Path(sys.argv[1])
-metrics = [
-    "request_throughput",
-    "output_throughput",
-    "total_token_throughput",
-    "mean_ttft_ms",
-    "mean_tpot_ms",
-    "mean_itl_ms",
-]
-rows = []
-for implementation in (
-    "native_trtllm",
-    "flashinfer_direct_xqa",
-    "fp8_native_trtllm",
-):
-    for workload in ("short", "long"):
-        if not (root / f"{implementation}-{workload}-r1.json").exists():
-            continue
-        runs = [
-            json.loads(
-                (root / f"{implementation}-{workload}-r{i}.json").read_text()
-            )
-            for i in range(1, 4)
-        ]
-        rows.append(
-            [
-                implementation,
-                workload,
-                *[statistics.mean(run[m] for run in runs) for m in metrics],
-            ]
-        )
-writer = csv.writer(sys.stdout)
-writer.writerow(["implementation", "workload", *metrics])
-writer.writerows(rows)
-PY
+python3 "$VLLM_SRC/benchmarks/kernels/summarize_mixed_kv_serving.py" \
+  "$RESULTS" \
+  --output-dir "$RESULTS/summary"
 
 grep -hE \
   'GPU KV cache size|Maximum concurrency|CUDAGraph|torch.compile|Available KV cache memory' \
-  "$RESULTS"/server-*.log \
+  "$RESULTS"/*/server.log \
   >"$RESULTS/server-capacity-and-compile.txt" || true
 
 stop_spare_keepalive

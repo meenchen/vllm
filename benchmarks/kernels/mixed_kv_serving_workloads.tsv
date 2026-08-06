@@ -1,0 +1,15 @@
+workload	purpose	input_tokens	output_tokens	concurrency	num_prompts	num_warmups
+p1_short_prefill	Short prefill and KV store	1024	1	1	128	16
+p2_long_prefill	Long prefill and KV store	32768	1	1	32	4
+d1_single_request	Single request latency	1024	256	1	128	16
+d2_short_c8	Low concurrency short decode	1024	256	8	256	16
+d3_short_c32	Medium concurrency short decode	1024	256	32	512	32
+d4_short_c64	Saturated short decode	1024	256	64	1024	64
+dh1_decode_heavy_c8	Decode heavy low concurrency	1024	1024	8	128	8
+dh2_decode_heavy_c32	Decode heavy throughput	1024	1024	32	256	32
+l1_16k_c8	Medium context low concurrency	16384	256	8	64	8
+l2_16k_c32	Medium context throughput	16384	256	32	128	32
+l3_32k_c8	Long context latency	32768	256	8	32	8
+l4_32k_c32	Long context throughput	32768	256	32	128	32
+l5_32k_c64	Long context saturation	32768	256	64	128	64
+h1_40k_c64	Historical spreadsheet match	40000	256	64	128	64
