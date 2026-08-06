@@ -103,8 +103,10 @@ else
   test -f "$SRC/flashinfer/3rdparty/cutlass/include/cutlass/cutlass.h"
   test -d "$SRC/flashinfer/3rdparty/cccl/libcudacxx/include"
 fi
-printf '%s\n' "${FLASHINFER_SOURCE_SHA:-unknown}" | tee "$RESULTS/flashinfer.sha"
-printf '%s\n' "${VLLM_SOURCE_SHA:-unknown}" | tee "$RESULTS/vllm.sha"
+FLASHINFER_SOURCE_SHA="${FLASHINFER_SOURCE_SHA:-$(git -C "$SRC/flashinfer" rev-parse HEAD)}"
+VLLM_SOURCE_SHA="${VLLM_SOURCE_SHA:-$(git -C "$VLLM_SRC" rev-parse HEAD)}"
+printf '%s\n' "$FLASHINFER_SOURCE_SHA" | tee "$RESULTS/flashinfer.sha"
+printf '%s\n' "$VLLM_SOURCE_SHA" | tee "$RESULTS/vllm.sha"
 
 python3 -m pip install --no-build-isolation --no-deps -e "$SRC/flashinfer"
 python3 -m pip install --no-build-isolation --no-deps -e "$VLLM_SRC"
