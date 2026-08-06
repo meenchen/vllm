@@ -143,3 +143,16 @@ def test_compare_omits_delta_for_zero_baseline():
 
     assert compared[0]["output_throughput_median"] == 0
     assert compared[0]["output_throughput_delta_vs_fp8_pct"] == ""
+
+
+def test_find_results_does_not_descend_into_cache(tmp_path):
+    result = tmp_path / "native_mixed" / "result-d4_short_c64-r1.json"
+    result.parent.mkdir()
+    result.write_text(json.dumps(make_result("native_mixed", 1, 100)))
+    cached = tmp_path / "native_mixed" / "cache" / "result-stale-r1.json"
+    cached.parent.mkdir()
+    cached.write_text(json.dumps(make_result("native_mixed", 1, 1)))
+
+    rows = find_results([tmp_path])
+
+    assert [row["_path"] for row in rows] == [str(result)]

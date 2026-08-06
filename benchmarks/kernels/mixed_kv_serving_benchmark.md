@@ -57,6 +57,10 @@ Resume an interrupted implementation with the same arguments and `--resume`.
 Existing files are validated before they are skipped. The aggregator rejects
 duplicate implementation/workload/repeat tuples across result roots.
 
+For a Slurm array that shares one result root, set `BENCH_SUMMARIZE=0` on each
+`compare_fp8_k_nvfp4_v.sh` task and run the aggregator once after the array
+finishes. This avoids concurrent writers to the summary files.
+
 Use the same model, weight dtype, hardware, tensor parallelism, source
 commits, container, server flags, and workload manifest for every comparison.
 Report medians with min/max across five repeats. Capacity-limit runs are a

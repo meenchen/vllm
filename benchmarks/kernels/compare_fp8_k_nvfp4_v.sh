@@ -266,9 +266,11 @@ case "${BENCH_IMPLEMENTATIONS:-methods}" in
     ;;
 esac
 
-python3 "$VLLM_SRC/benchmarks/kernels/summarize_mixed_kv_serving.py" \
-  "$RESULTS" \
-  --output-dir "$RESULTS/summary"
+if [[ "${BENCH_SUMMARIZE:-1}" == "1" ]]; then
+  python3 "$VLLM_SRC/benchmarks/kernels/summarize_mixed_kv_serving.py" \
+    "$RESULTS" \
+    --output-dir "$RESULTS/summary"
+fi
 
 grep -hE \
   'GPU KV cache size|Maximum concurrency|CUDAGraph|torch.compile|Available KV cache memory' \

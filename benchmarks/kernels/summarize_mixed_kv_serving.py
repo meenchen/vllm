@@ -46,7 +46,9 @@ def parse_args() -> argparse.Namespace:
 def find_results(roots: list[Path]) -> list[dict[str, Any]]:
     rows = []
     for root in roots:
-        for path in sorted(root.rglob("result-*-r*.json")):
+        paths = set(root.glob("result-*-r*.json"))
+        paths.update(root.glob("*/result-*-r*.json"))
+        for path in sorted(paths):
             row = json.loads(path.read_text())
             row["_path"] = str(path)
             rows.append(row)
