@@ -11,7 +11,7 @@ FLASHINFER_SOURCE_BRANCH="${FLASHINFER_SOURCE_BRANCH:-fp8-k-nvfp4-v-direct-xqa-c
 mkdir -p "$SRC" "$RESULTS" "$CACHE"
 
 export HOME="$CACHE/home"
-export HF_HOME="$CACHE/huggingface"
+export HF_HOME="${HF_HOME:-$CACHE/huggingface}"
 export XDG_CACHE_HOME="$CACHE/xdg"
 export VLLM_CACHE_ROOT="$CACHE/vllm"
 export FLASHINFER_WORKSPACE_BASE="$CACHE/flashinfer"
