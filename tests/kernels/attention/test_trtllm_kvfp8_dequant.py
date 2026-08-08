@@ -524,13 +524,13 @@ def test_trtllm_fp8_k_nvfp4_v_prefill_unpack():
             expected_v *= logical_scales[src_page].float().repeat_interleave(16, dim=-1)
             torch.testing.assert_close(
                 mock_cache[dst_page, 0],
-                k_cache[src_page].to(torch.bfloat16),
+                k_cache[src_page],
                 atol=0,
                 rtol=0,
             )
             torch.testing.assert_close(
                 mock_cache[dst_page, 1],
-                expected_v.to(torch.bfloat16),
+                expected_v.to(FP8_DTYPE),
                 atol=0,
                 rtol=0,
             )

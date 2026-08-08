@@ -487,7 +487,12 @@ class Attention(nn.Module, AttentionLayerBase):
             # which reduces overheads during decoding.
             # Otherwise queries are quantized using custom ops
             # which causes decoding overheads
-            assert self.kv_cache_dtype in {"fp8", "fp8_e4m3", "nvfp4"}
+            assert self.kv_cache_dtype in {
+                "fp8",
+                "fp8_e4m3",
+                "nvfp4",
+                "fp8_k_nvfp4_v",
+            }
 
             # check if query quantization is supported
             if self.impl.supports_quant_query_input:

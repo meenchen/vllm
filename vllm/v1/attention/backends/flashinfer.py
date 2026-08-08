@@ -320,7 +320,7 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
     v_block_scales: torch.Tensor,
     block_tables_prefill: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Unpack normalized mixed KV pages for the BF16 context kernel.
+    """Unpack normalized mixed KV pages for the FP8 context kernel.
 
     The returned cache intentionally excludes the per-tensor K/V scales. The
     context attention call applies those scales through bmm1/bmm2, matching the
@@ -350,7 +350,7 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
             block_size,
             head_size,
         ),
-        dtype=torch.bfloat16,
+        dtype=FP8_DTYPE,
         device=k_cache.device,
     )
     mock_block_table = torch.arange(
@@ -910,13 +910,11 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
             can_use_trtllm
             and not vllm_config.attention_config.disable_flashinfer_q_quantization
         ):
-            if self.is_kvcache_nvfp4:
-                # NVFP4 KV cache uses FP8 quantized queries
+            if self.uses_nvfp4_cache:
+                # NVFP4 V cache kernels use FP8 quantized queries.
                 self.q_data_type = FlashInferBackend.get_dtype_for_flashinfer(
                     "fp8_e4m3"
                 )
-            elif self.is_kvcache_fp8_k_nvfp4_v:
-                self.q_data_type = self.model_config.dtype
             else:
                 self.q_data_type = self.kv_cache_dtype
         else:
@@ -1645,7 +1643,6 @@ class FlashInferImpl(AttentionImpl):
             self.support_trtllm_attn
             and vllm_config is not None
             and not vllm_config.attention_config.disable_flashinfer_q_quantization
-            and not self.is_kvcache_fp8_k_nvfp4_v
         )
         self.bmm1_scale: float | None = None
         self.bmm2_scale: float | None = None
@@ -1723,9 +1720,7 @@ class FlashInferImpl(AttentionImpl):
 
         if self.bmm1_scale is None:
             self.bmm1_scale = self.scale
-            if self.is_kvcache_fp8_k_nvfp4_v:
-                self.bmm1_scale *= layer._k_scale_float
-            elif is_quantized_kv_cache(self.kv_cache_dtype):
+            if is_quantized_kv_cache(self.kv_cache_dtype):
                 self.bmm1_scale *= layer._q_scale_float * layer._k_scale_float
 
         if self.bmm2_scale is None:

@@ -12,6 +12,8 @@ from vllm.v1.attention.backends.flashinfer import (
     trtllm_prefill_attn_fp8_k_nvfp4_v_unpack,
 )
 
+FP8_DTYPE = current_platform.fp8_dtype()
+
 
 @pytest.mark.skipif(
     not current_platform.is_device_capability_family(100),
@@ -84,8 +86,8 @@ def test_fp8_k_nvfp4_v_store_and_native_decode() -> None:
         v_block_scales,
         block_tables,
     )
-    key_qdq = normalized_cache[1:, 0] * k_scale
-    value_qdq = normalized_cache[1:, 1] * v_scale
+    key_qdq = normalized_cache[1:, 0].float() * k_scale
+    value_qdq = normalized_cache[1:, 1].float() * v_scale
     torch.testing.assert_close(
         key_qdq.permute(0, 2, 1, 3).reshape_as(key),
         key.float(),
@@ -106,10 +108,11 @@ def test_fp8_k_nvfp4_v_store_and_native_decode() -> None:
         dtype=torch.bfloat16,
         device=device,
     )
+    query_fp8 = query.to(FP8_DTYPE)
     seq_lens = torch.tensor([num_pages * page_size], dtype=torch.int32, device=device)
     workspace = torch.zeros(256 * 1024 * 1024, dtype=torch.uint8, device=device)
     output = trtllm_batch_decode_with_kv_cache(
-        query=query,
+        query=query_fp8,
         kv_cache=(k_cache, v_cache),
         workspace_buffer=workspace,
         block_tables=block_tables,
@@ -139,7 +142,7 @@ def test_fp8_k_nvfp4_v_store_and_native_decode() -> None:
         .float()
         * v_scale.item()
     )
-    logits = torch.einsum("hd,hnd->hn", query[0].float(), key_seq)
+    logits = torch.einsum("hd,hnd->hn", query_fp8[0].float(), key_seq)
     probs = torch.softmax(logits / math.sqrt(head_size), dim=-1)
     reference = torch.einsum("hn,hnd->hd", probs, value_seq)
     cosine = torch.nn.functional.cosine_similarity(
