@@ -92,6 +92,7 @@ from vllm.v1.kv_cache_interface import (
     KVCacheSpec,
     KVQuantMode,
     iter_layer_specs,
+    resolve_kv_cache_dtype_for_spec,
 )
 from vllm.v1.utils import CpuGpuBuffer
 
@@ -941,7 +942,9 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         self.page_size = self.kv_cache_spec.block_size
 
         if self.kv_cache_spec.kv_quant_mode != KVQuantMode.NONE:
-            self.cache_dtype = self.cache_config.cache_dtype
+            self.cache_dtype = resolve_kv_cache_dtype_for_spec(
+                self.kv_cache_spec, self.cache_config.cache_dtype
+            )
             # Cannot use self.kv_cache_spec.dtype here because kv_cache_spec
             # storage dtype may not be the same as the op dtype (uint8 vs fp8_e4m3)
             self.is_kvcache_nvfp4 = self.cache_dtype.startswith("nvfp4")

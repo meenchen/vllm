@@ -37,6 +37,11 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding,
 )
 from vllm.platforms import current_platform
+from vllm.v1.kv_cache_interface import (
+    FullAttentionSpec,
+    KVQuantMode,
+    resolve_kv_cache_dtype_for_spec,
+)
 
 
 @pytest.fixture(scope="function", autouse=True)
@@ -139,6 +144,26 @@ def test_modelopt_mixed_precision_resolves_layerwise_kv_cache_dtype():
         config.get_quant_method(mapped_attention, "model.layers.2.self_attn.attn")
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("quant_mode", "expected"),
+    [
+        (KVQuantMode.FP8_PER_TENSOR, "fp8_e4m3"),
+        (KVQuantMode.NVFP4, "nvfp4"),
+    ],
+)
+def test_modelopt_mixed_precision_resolves_auto_runtime_dtype(quant_mode, expected):
+    spec = FullAttentionSpec(
+        block_size=16,
+        num_kv_heads=1,
+        head_size=128,
+        dtype=torch.uint8,
+        kv_quant_mode=quant_mode,
+    )
+
+    assert resolve_kv_cache_dtype_for_spec(spec, "auto") == expected
+    assert resolve_kv_cache_dtype_for_spec(spec, "bfloat16") == "bfloat16"
 
 
 @pytest.mark.parametrize(

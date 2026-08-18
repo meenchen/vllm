@@ -437,6 +437,23 @@ class AttentionSpec(KVCacheSpec):
         return cdiv(max_len, self.block_size * kv_shard_count)
 
 
+def resolve_kv_cache_dtype_for_spec(spec: AttentionSpec, cache_dtype: str) -> str:
+    """Resolve an ``auto`` cache dtype from one attention layer's cache spec.
+
+    Checkpoint-driven heterogeneous KV quantization leaves the model-wide cache
+    dtype as ``auto`` and records the concrete format in each layer's spec.
+    Runtime layout and metadata code must therefore use the spec's quantization
+    mode instead of forwarding ``auto`` to a quantized attention backend.
+    """
+    if cache_dtype != "auto":
+        return cache_dtype
+    if spec.kv_quant_mode == KVQuantMode.FP8_PER_TENSOR:
+        return "fp8_e4m3"
+    if spec.kv_quant_mode == KVQuantMode.NVFP4:
+        return "nvfp4"
+    return cache_dtype
+
+
 @dataclass(frozen=True, kw_only=True)
 class FullAttentionSpec(AttentionSpec):
     """
