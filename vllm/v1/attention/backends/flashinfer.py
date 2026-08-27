@@ -316,11 +316,16 @@ def _nvfp4_e2m1_to_float(fp4):
     ]
 )
 def _trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
+    k_cache_ptr,
     v_cache_ptr,
     v_scale_ptr,
     block_tables_ptr,
+    staged_k_cache_ptr,
     staged_v_cache_ptr,
     block_table_stride,
+    k_stride_page,
+    k_stride_head,
+    k_stride_token,
     v_stride_page,
     v_stride_head,
     v_stride_token,
@@ -396,6 +401,16 @@ def _trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
         + token_idx[:, None] * dst_stride_token
         + dim_low
     )
+    k_offset_low = (
+        safe_page * k_stride_page
+        + head_idx * k_stride_head
+        + token_idx[:, None] * k_stride_token
+        + dim_low
+    )
+    k_low = tl.load(k_cache_ptr + k_offset_low, mask=mask[:, None])
+    k_high = tl.load(k_cache_ptr + k_offset_low + 1, mask=mask[:, None])
+    tl.store(staged_k_cache_ptr + dst_offset_low, k_low, mask=mask[:, None])
+    tl.store(staged_k_cache_ptr + dst_offset_low + 1, k_high, mask=mask[:, None])
     tl.store(
         staged_v_cache_ptr + dst_offset_low,
         v_low,
@@ -416,7 +431,7 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
 ) -> tuple[
     tuple[torch.Tensor, torch.Tensor], torch.Tensor, bool
 ]:
-    """Materialize referenced NVFP4 V pages as compact FP8 for prefill."""
+    """Materialize referenced K/V pages as compact FP8 for prefill."""
     if k_cache.dtype != FP8_DTYPE or v_cache.dtype != torch.uint8:
         raise ValueError("Expected FP8 K and packed uint8 NVFP4 V caches")
     if v_block_scales.dtype != FP8_DTYPE:
@@ -434,29 +449,32 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
 
     batch_size, num_pages_per_seq = block_tables_prefill.shape
     num_page_refs = batch_size * num_pages_per_seq
-    staged_v_cache = torch.empty(
-        (
-            num_page_refs + 1,
-            num_kv_heads,
-            block_size,
-            head_size,
-        ),
+    staged_cache_shape = (
+        num_page_refs + 1,
+        num_kv_heads,
+        block_size,
+        head_size,
+    )
+    staged_k_cache = torch.empty(
+        staged_cache_shape,
         dtype=FP8_DTYPE,
         device=k_cache.device,
     )
-    staged_v_block_table = torch.arange(
+    staged_v_cache = torch.empty(
+        staged_cache_shape,
+        dtype=FP8_DTYPE,
+        device=k_cache.device,
+    )
+    staged_block_table = torch.arange(
         1,
         num_page_refs + 1,
         dtype=torch.int32,
         device=block_tables_prefill.device,
     ).reshape(batch_size, num_pages_per_seq)
-    staged_v_block_table = torch.where(
+    staged_block_table = torch.where(
         block_tables_prefill >= 0,
-        staged_v_block_table,
-        torch.full_like(staged_v_block_table, -1),
-    )
-    staged_block_table = torch.stack(
-        (block_tables_prefill, staged_v_block_table), dim=1
+        staged_block_table,
+        torch.full_like(staged_block_table, -1),
     )
 
     scale_groups_per_page = block_size * (head_size // 16)
@@ -465,11 +483,16 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
         cdiv(scale_groups_per_page, _FP8_K_NVFP4_V_STAGING_BLOCK_SCALES),
     )
     _trtllm_prefill_attn_fp8_k_nvfp4_v_unpack[grid](
+        k_cache,
         v_cache,
         v_block_scales,
         block_tables_prefill,
+        staged_k_cache,
         staged_v_cache,
         block_tables_prefill.stride(0),
+        k_cache.stride(0),
+        k_cache.stride(1),
+        k_cache.stride(2),
         v_cache.stride(0),
         v_cache.stride(1),
         v_cache.stride(2),
@@ -487,7 +510,7 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
         BLOCK_SCALES=_FP8_K_NVFP4_V_STAGING_BLOCK_SCALES,
         num_warps=_FP8_K_NVFP4_V_STAGING_NUM_WARPS,
     )
-    return (k_cache, staged_v_cache), staged_block_table, False
+    return (staged_k_cache, staged_v_cache), staged_block_table, True
 
 
 def use_staged_fp8_k_nvfp4_v_prefill(
