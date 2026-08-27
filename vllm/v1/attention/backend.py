@@ -396,6 +396,9 @@ class CommonAttentionMetadata:
 
     causal: bool | torch.Tensor = True
 
+    is_dummy_run: bool = False
+    """Whether this metadata was built for a profiling or warmup run."""
+
     # Needed by FastPrefillAttentionBuilder
     logits_indices_padded: torch.Tensor | None = None
     num_logits_indices: int | None = None
@@ -548,6 +551,7 @@ class CommonAttentionMetadata:
             causal=self.causal[:num_actual_reqs]
             if isinstance(self.causal, torch.Tensor)
             else self.causal,
+            is_dummy_run=self.is_dummy_run,
             logits_indices_padded=self.logits_indices_padded,
             num_logits_indices=self.num_logits_indices,
             max_logits_per_req=self.max_logits_per_req,

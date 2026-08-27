@@ -1618,6 +1618,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 # from the zeroed dummy block tables instead of retaining state
                 # indices from the previous real batch.
                 for_capture=dummy_run and batch_desc.cg_mode == CUDAGraphMode.FULL,
+                is_dummy_run=dummy_run,
             )
 
         input_ids = input_batch.input_ids
