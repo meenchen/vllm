@@ -284,7 +284,8 @@ def trtllm_prefill_attn_kvfp8_dequant(
     return mock_kv_cache, mock_block_table
 
 
-_FP8_K_NVFP4_V_STAGING_BLOCK_SCALES = 64
+_FP8_K_NVFP4_V_STAGING_BLOCK_SCALES = 512
+_FP8_K_NVFP4_V_STAGING_NUM_WARPS = 4
 _FP8_K_NVFP4_V_STAGING_MIN_Q = 512
 
 
@@ -484,7 +485,7 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
         scale_groups_per_page,
         HEAD_SIZE=head_size,
         BLOCK_SCALES=_FP8_K_NVFP4_V_STAGING_BLOCK_SCALES,
-        num_warps=8,
+        num_warps=_FP8_K_NVFP4_V_STAGING_NUM_WARPS,
     )
     return (k_cache, staged_v_cache), staged_block_table, False
 
