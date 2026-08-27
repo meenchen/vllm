@@ -167,6 +167,7 @@ class EncoderOnlyModelState(DefaultModelState):
         attn_groups: list[list[AttentionGroup]],
         kv_cache_config: KVCacheConfig,
         for_capture: bool = False,
+        is_dummy_run: bool = False,
     ) -> dict[str, Any]:
         attn_metadata = super().prepare_attn(
             input_batch,
@@ -175,10 +176,13 @@ class EncoderOnlyModelState(DefaultModelState):
             slot_mappings,
             attn_groups,
             kv_cache_config,
-            for_capture,
+            for_capture=for_capture,
+            is_dummy_run=is_dummy_run,
         )
         attn_metadata.update(
-            self._build_encoder_attn_metadata(input_batch, cudagraph_mode, for_capture)
+            self._build_encoder_attn_metadata(
+                input_batch, cudagraph_mode, for_capture, is_dummy_run
+            )
         )
         return attn_metadata
 
@@ -187,6 +191,7 @@ class EncoderOnlyModelState(DefaultModelState):
         input_batch: InputBatch,
         cudagraph_mode: CUDAGraphMode,
         for_capture: bool,
+        is_dummy_run: bool,
     ) -> dict[str, Any]:
         if cudagraph_mode == CUDAGraphMode.FULL:
             num_reqs = input_batch.num_reqs_after_padding
@@ -213,6 +218,7 @@ class EncoderOnlyModelState(DefaultModelState):
             slot_mapping=self._dummy_slot_mapping[:num_tokens],
             seq_lens_cpu_upper_bound=input_batch.seq_lens_cpu_upper_bound[:num_reqs],
             positions=input_batch.positions,
+            is_dummy_run=is_dummy_run,
         )
 
         attn_metadata: dict[str, Any] = {}

@@ -259,6 +259,7 @@ def build_attn_metadata(
     mm_req_doc_ranges: dict[int, list[tuple[int, int]]] | None = None,
     model_specific_attn_metadata: ModelSpecificAttnMetadata | None = None,
     for_cudagraph_capture: bool = False,
+    is_dummy_run: bool = False,
     causal: bool | torch.Tensor | Mapping[int, bool] = True,
     rswa_prefix_lens: torch.Tensor | None = None,
 ) -> dict[str, Any]:
@@ -305,6 +306,7 @@ def build_attn_metadata(
             is_prefilling=group_is_prefilling,
             mm_req_doc_ranges=mm_req_doc_ranges,
             rswa_prefix_lens=rswa_prefix_lens,
+            is_dummy_run=is_dummy_run,
             **common_attn_metadata_extra_kwargs,
         )
 
