@@ -306,6 +306,7 @@ def trtllm_prefill_attn_kvfp8_dequant(
 
 _FP8_K_NVFP4_V_STAGING_BLOCK_SCALES = 512
 _FP8_K_NVFP4_V_STAGING_NUM_WARPS = 4
+_FP8_K_NVFP4_V_STAGING_COPY_BLOCK = 1024
 _FP8_K_NVFP4_V_STAGING_MIN_WORK = 512 * 1024
 _FP8_K_NVFP4_V_STAGING_ALIGNMENT = 256
 
@@ -315,14 +316,21 @@ def _fp8_k_nvfp4_v_staging_layout(
     num_kv_heads: int,
     block_size: int,
     head_size: int,
-) -> tuple[int, int, int]:
-    staged_v_bytes = (num_page_refs + 1) * num_kv_heads * block_size * head_size
-    table_offset = (
-        cdiv(staged_v_bytes, _FP8_K_NVFP4_V_STAGING_ALIGNMENT)
+) -> tuple[int, int, int, int]:
+    staged_cache_bytes = (num_page_refs + 1) * num_kv_heads * block_size * head_size
+    staged_v_offset = (
+        cdiv(staged_cache_bytes, _FP8_K_NVFP4_V_STAGING_ALIGNMENT)
         * _FP8_K_NVFP4_V_STAGING_ALIGNMENT
     )
-    total_bytes = table_offset + 2 * num_page_refs * torch.int32.itemsize
-    return staged_v_bytes, table_offset, total_bytes
+    table_offset = (
+        cdiv(
+            staged_v_offset + staged_cache_bytes,
+            _FP8_K_NVFP4_V_STAGING_ALIGNMENT,
+        )
+        * _FP8_K_NVFP4_V_STAGING_ALIGNMENT
+    )
+    total_bytes = table_offset + num_page_refs * torch.int32.itemsize
+    return staged_cache_bytes, staged_v_offset, table_offset, total_bytes
 
 
 @triton.jit
@@ -388,14 +396,9 @@ def _trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
     valid_page = (src_page >= 0) & (src_page < num_src_pages)
     safe_page = tl.maximum(0, tl.minimum(src_page, num_src_pages - 1))
     table_mask = (head_idx == 0) & (scale_block_idx == 0)
-    table_offset = batch_idx * 2 * num_pages_per_seq + page_idx
+    table_offset = batch_idx * num_pages_per_seq + page_idx
     tl.store(
         staged_block_tables_ptr + table_offset,
-        tl.where(valid_page, src_page, -1),
-        mask=table_mask,
-    )
-    tl.store(
-        staged_block_tables_ptr + table_offset + num_pages_per_seq,
         tl.where(valid_page, page_pos + 1, -1),
         mask=table_mask,
     )
@@ -453,6 +456,59 @@ def _trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
     )
 
 
+@triton.jit(
+    do_not_specialize=["block_table_stride", "num_pages_per_seq", "num_kv_heads"]
+)
+def _trtllm_prefill_attn_fp8_k_copy(
+    k_cache_ptr,
+    block_tables_ptr,
+    staged_k_cache_ptr,
+    block_table_stride,
+    src_stride_page,
+    src_stride_head,
+    src_stride_token,
+    dst_stride_page,
+    dst_stride_head,
+    dst_stride_token,
+    num_src_pages,
+    num_pages_per_seq,
+    num_kv_heads,
+    elements_per_page_head,
+    COPY_BLOCK: tl.constexpr,
+    HEAD_SIZE: tl.constexpr,
+):
+    page_head_idx = tl.program_id(0).to(tl.int64)
+    chunk_idx = tl.program_id(1).to(tl.int64)
+    page_pos = page_head_idx // num_kv_heads
+    head_idx = page_head_idx % num_kv_heads
+    batch_idx = page_pos // num_pages_per_seq
+    page_idx = page_pos % num_pages_per_seq
+    src_page = tl.load(block_tables_ptr + batch_idx * block_table_stride + page_idx).to(
+        tl.int64
+    )
+    valid_page = (src_page >= 0) & (src_page < num_src_pages)
+    safe_page = tl.maximum(0, tl.minimum(src_page, num_src_pages - 1))
+
+    linear = chunk_idx * COPY_BLOCK + tl.arange(0, COPY_BLOCK).to(tl.int64)
+    mask = valid_page & (linear < elements_per_page_head)
+    token_idx = linear // HEAD_SIZE
+    dim_idx = linear % HEAD_SIZE
+    src_offset = (
+        safe_page * src_stride_page
+        + head_idx * src_stride_head
+        + token_idx * src_stride_token
+        + dim_idx
+    )
+    dst_offset = (
+        (page_pos + 1) * dst_stride_page
+        + head_idx * dst_stride_head
+        + token_idx * dst_stride_token
+        + dim_idx
+    )
+    value = tl.load(k_cache_ptr + src_offset, mask=mask)
+    tl.store(staged_k_cache_ptr + dst_offset, value, mask=mask)
+
+
 def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
@@ -460,7 +516,7 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
     block_tables_prefill: torch.Tensor,
     staging_workspace: torch.Tensor,
 ) -> tuple[tuple[torch.Tensor, torch.Tensor], torch.Tensor, bool] | None:
-    """Materialize referenced NVFP4 V pages as compact FP8 for prefill."""
+    """Materialize referenced mixed pages as compact, shared-index FP8."""
     if k_cache.dtype != FP8_DTYPE or v_cache.dtype != torch.uint8:
         raise ValueError("Expected FP8 K and packed uint8 NVFP4 V caches")
     if v_block_scales.dtype != FP8_DTYPE:
@@ -486,13 +542,25 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
 
     batch_size, num_pages_per_seq = block_tables_prefill.shape
     num_page_refs = batch_size * num_pages_per_seq
-    staged_v_bytes, table_offset, total_bytes = _fp8_k_nvfp4_v_staging_layout(
-        num_page_refs, num_kv_heads, block_size, head_size
+    staged_cache_bytes, staged_v_offset, table_offset, total_bytes = (
+        _fp8_k_nvfp4_v_staging_layout(
+            num_page_refs, num_kv_heads, block_size, head_size
+        )
     )
     if total_bytes > staging_workspace.numel():
         return None
+    staged_k_cache = (
+        staging_workspace[:staged_cache_bytes]
+        .view(FP8_DTYPE)
+        .view(
+            num_page_refs + 1,
+            num_kv_heads,
+            block_size,
+            head_size,
+        )
+    )
     staged_v_cache = (
-        staging_workspace[:staged_v_bytes]
+        staging_workspace[staged_v_offset : staged_v_offset + staged_cache_bytes]
         .view(FP8_DTYPE)
         .view(
             num_page_refs + 1,
@@ -506,9 +574,34 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
         .view(torch.int32)
         .view(
             batch_size,
-            2,
             num_pages_per_seq,
         )
+    )
+
+    elements_per_page_head = block_size * head_size
+    _trtllm_prefill_attn_fp8_k_copy[
+        (
+            batch_size * num_pages_per_seq * num_kv_heads,
+            cdiv(elements_per_page_head, _FP8_K_NVFP4_V_STAGING_COPY_BLOCK),
+        )
+    ](
+        k_cache,
+        block_tables_prefill,
+        staged_k_cache,
+        block_tables_prefill.stride(0),
+        k_cache.stride(0),
+        k_cache.stride(1),
+        k_cache.stride(2),
+        staged_k_cache.stride(0),
+        staged_k_cache.stride(1),
+        staged_k_cache.stride(2),
+        num_pages,
+        num_pages_per_seq,
+        num_kv_heads,
+        elements_per_page_head,
+        COPY_BLOCK=_FP8_K_NVFP4_V_STAGING_COPY_BLOCK,
+        HEAD_SIZE=head_size,
+        num_warps=_FP8_K_NVFP4_V_STAGING_NUM_WARPS,
     )
 
     scale_groups_per_page = block_size * (head_size // 16)
@@ -540,7 +633,7 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
         BLOCK_SCALES=_FP8_K_NVFP4_V_STAGING_BLOCK_SCALES,
         num_warps=_FP8_K_NVFP4_V_STAGING_NUM_WARPS,
     )
-    return (k_cache, staged_v_cache), staged_block_table, False
+    return (staged_k_cache, staged_v_cache), staged_block_table, True
 
 
 def use_staged_fp8_k_nvfp4_v_prefill(

@@ -35,7 +35,7 @@ def _to_fp8(x: torch.Tensor) -> tuple[torch.Tensor, float]:
 def _make_staging_workspace(
     k_cache: torch.Tensor, block_tables: torch.Tensor
 ) -> torch.Tensor:
-    _, _, workspace_size = _fp8_k_nvfp4_v_staging_layout(
+    _, _, _, workspace_size = _fp8_k_nvfp4_v_staging_layout(
         block_tables.numel(),
         k_cache.shape[1],
         k_cache.shape[2],
@@ -216,25 +216,22 @@ def test_fp8_k_nvfp4_v_staged_prefill_values(head_size: int) -> None:
         device="cuda",
     )
     staged_k_cache, staged_v_cache = staged_cache
-    staged_v_block_tables = torch.arange(
+    staged_block_tables_ref = torch.arange(
         1, 5, dtype=torch.int32, device="cuda"
     ).reshape(2, 2)
-    staged_v_block_tables[-1, -1] = -1
-    assert staged_k_cache.data_ptr() == k_cache.data_ptr()
-    torch.testing.assert_close(
-        staged_block_tables,
-        torch.stack((block_tables, staged_v_block_tables), dim=1),
-    )
-    assert not uses_shared_paged_kv_idx
+    staged_block_tables_ref[-1, -1] = -1
+    assert staged_k_cache.data_ptr() != k_cache.data_ptr()
+    torch.testing.assert_close(staged_block_tables, staged_block_tables_ref)
+    assert uses_shared_paged_kv_idx
     for batch in range(block_tables.shape[0]):
         for page in range(block_tables.shape[1]):
             src_page = int(block_tables[batch, page].item())
             if src_page < 0:
                 continue
-            staged_page = int(staged_v_block_tables[batch, page].item())
+            staged_page = int(staged_block_tables_ref[batch, page].item())
             expected_v = e2m1[fp4_codes[src_page].long()]
             expected_v *= logical_scales[src_page].float().repeat_interleave(16, -1)
-            torch.testing.assert_close(staged_k_cache[src_page], k_cache[src_page])
+            torch.testing.assert_close(staged_k_cache[staged_page], k_cache[src_page])
             torch.testing.assert_close(
                 staged_v_cache[staged_page], expected_v.to(torch.float8_e4m3fn)
             )
@@ -251,6 +248,7 @@ def test_fp8_k_nvfp4_v_staged_prefill_cuda_graph_replay() -> None:
         dtype=torch.float8_e4m3fn,
         device="cuda",
     )
+    k_cache[2].fill_(3.0)
     v_cache = torch.stack(
         [
             torch.full(
@@ -300,9 +298,13 @@ def test_fp8_k_nvfp4_v_staged_prefill_cuda_graph_replay() -> None:
 
     torch.testing.assert_close(
         staged_block_tables,
-        torch.tensor([[[2, -1], [1, -1]]], dtype=torch.int32, device="cuda"),
+        torch.tensor([[1, -1]], dtype=torch.int32, device="cuda"),
     )
-    _, staged_v_cache = staged_cache
+    staged_k_cache, staged_v_cache = staged_cache
+    torch.testing.assert_close(
+        staged_k_cache[1].float(),
+        torch.full_like(staged_k_cache[1].float(), 3.0),
+    )
     torch.testing.assert_close(
         staged_v_cache[1].float(),
         torch.full(
@@ -468,16 +470,15 @@ def test_fp8_k_nvfp4_v_staged_prefill_context(head_size: int) -> None:
     # Staging preserves normalized FP8 K. The global k_scale is applied by
     # BMM1, just as it is for the native mixed cache path.
     staged_k_cache, staged_v_cache = staged_cache
-    staged_v_block_tables = torch.arange(
+    staged_block_tables_ref = torch.arange(
         1, 5, dtype=torch.int32, device="cuda"
     ).reshape(2, 2)
-    assert staged_k_cache.data_ptr() == k_cache.data_ptr()
+    assert staged_k_cache.data_ptr() != k_cache.data_ptr()
+    staged_k_cache = staged_k_cache[1:]
     staged_v_cache = staged_v_cache[1:]
-    torch.testing.assert_close(
-        staged_block_tables,
-        torch.stack((block_tables, staged_v_block_tables), dim=1),
-    )
-    assert not uses_shared_paged_kv_idx
+    torch.testing.assert_close(staged_block_tables, staged_block_tables_ref)
+    assert uses_shared_paged_kv_idx
+    torch.testing.assert_close(staged_k_cache, k_cache)
     torch.testing.assert_close(
         staged_v_cache.float() * v_scale,
         value_qdq,
