@@ -103,6 +103,7 @@ FP4_DTYPE = torch.uint8
 logger = init_logger(__name__)
 
 trtllm_workspace_buffer = None
+fp8_k_nvfp4_v_staging_workspace = None
 
 
 def _get_trtllm_workspace_buffer():
@@ -112,6 +113,25 @@ def _get_trtllm_workspace_buffer():
             envs.VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE, dtype=torch.uint8, device="cuda"
         )
     return trtllm_workspace_buffer
+
+
+def _get_fp8_k_nvfp4_v_staging_workspace() -> torch.Tensor | None:
+    global fp8_k_nvfp4_v_staging_workspace
+    if envs.VLLM_FP8_K_NVFP4_V_STAGED_PREFILL_MIN_WORK <= 0:
+        return None
+    workspace_size = envs.VLLM_FP8_K_NVFP4_V_STAGING_WORKSPACE_SIZE
+    if workspace_size <= 0:
+        return None
+    if fp8_k_nvfp4_v_staging_workspace is None:
+        fp8_k_nvfp4_v_staging_workspace = torch.empty(
+            workspace_size, dtype=torch.uint8, device="cuda"
+        )
+    elif fp8_k_nvfp4_v_staging_workspace.numel() != workspace_size:
+        raise RuntimeError(
+            "VLLM_FP8_K_NVFP4_V_STAGING_WORKSPACE_SIZE cannot change after "
+            "the staging workspace is initialized"
+        )
+    return fp8_k_nvfp4_v_staging_workspace
 
 
 def _pack_draft_block_bool_mask(
@@ -286,7 +306,23 @@ def trtllm_prefill_attn_kvfp8_dequant(
 
 _FP8_K_NVFP4_V_STAGING_BLOCK_SCALES = 512
 _FP8_K_NVFP4_V_STAGING_NUM_WARPS = 4
-_FP8_K_NVFP4_V_STAGING_MIN_Q = 512
+_FP8_K_NVFP4_V_STAGING_MIN_WORK = 512 * 1024
+_FP8_K_NVFP4_V_STAGING_ALIGNMENT = 256
+
+
+def _fp8_k_nvfp4_v_staging_layout(
+    num_page_refs: int,
+    num_kv_heads: int,
+    block_size: int,
+    head_size: int,
+) -> tuple[int, int, int]:
+    staged_v_bytes = (num_page_refs + 1) * num_kv_heads * block_size * head_size
+    table_offset = (
+        cdiv(staged_v_bytes, _FP8_K_NVFP4_V_STAGING_ALIGNMENT)
+        * _FP8_K_NVFP4_V_STAGING_ALIGNMENT
+    )
+    total_bytes = table_offset + 2 * num_page_refs * torch.int32.itemsize
+    return staged_v_bytes, table_offset, total_bytes
 
 
 @triton.jit
@@ -320,6 +356,7 @@ def _trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
     v_scale_ptr,
     block_tables_ptr,
     staged_v_cache_ptr,
+    staged_block_tables_ptr,
     block_table_stride,
     v_stride_page,
     v_stride_head,
@@ -350,9 +387,21 @@ def _trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
     )
     valid_page = (src_page >= 0) & (src_page < num_src_pages)
     safe_page = tl.maximum(0, tl.minimum(src_page, num_src_pages - 1))
-    logical_scale = (
-        scale_block_idx * BLOCK_SCALES + tl.arange(0, BLOCK_SCALES)
-    ).to(tl.int64)
+    table_mask = (head_idx == 0) & (scale_block_idx == 0)
+    table_offset = batch_idx * 2 * num_pages_per_seq + page_idx
+    tl.store(
+        staged_block_tables_ptr + table_offset,
+        tl.where(valid_page, src_page, -1),
+        mask=table_mask,
+    )
+    tl.store(
+        staged_block_tables_ptr + table_offset + num_pages_per_seq,
+        tl.where(valid_page, page_pos + 1, -1),
+        mask=table_mask,
+    )
+    logical_scale = (scale_block_idx * BLOCK_SCALES + tl.arange(0, BLOCK_SCALES)).to(
+        tl.int64
+    )
     valid_scale = logical_scale < scale_groups_per_page
     mask = valid_page & valid_scale
     scale_dim = HEAD_SIZE // 16
@@ -368,9 +417,7 @@ def _trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
         + swizzled_token * sf_stride_token
         + swizzled_scale
     )
-    block_scale = tl.load(v_scale_ptr + sf_offset, mask=mask, other=0.0).to(
-        tl.float32
-    )
+    block_scale = tl.load(v_scale_ptr + sf_offset, mask=mask, other=0.0).to(tl.float32)
 
     # One lane owns one 16-value group. Read the NVFP4 V scale and each packed
     # byte once before publishing both nibbles.
@@ -382,9 +429,7 @@ def _trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
         + token_idx[:, None] * v_stride_token
         + packed_dim
     )
-    packed_v = tl.load(v_cache_ptr + v_offset, mask=mask[:, None], other=0).to(
-        tl.int32
-    )
+    packed_v = tl.load(v_cache_ptr + v_offset, mask=mask[:, None], other=0).to(tl.int32)
     v_low = _nvfp4_e2m1_to_float(packed_v & 0xF) * block_scale[:, None]
     v_high = _nvfp4_e2m1_to_float(packed_v >> 4) * block_scale[:, None]
 
@@ -413,9 +458,8 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
     v_cache: torch.Tensor,
     v_block_scales: torch.Tensor,
     block_tables_prefill: torch.Tensor,
-) -> tuple[
-    tuple[torch.Tensor, torch.Tensor], torch.Tensor, bool
-]:
+    staging_workspace: torch.Tensor,
+) -> tuple[tuple[torch.Tensor, torch.Tensor], torch.Tensor, bool] | None:
     """Materialize referenced NVFP4 V pages as compact FP8 for prefill."""
     if k_cache.dtype != FP8_DTYPE or v_cache.dtype != torch.uint8:
         raise ValueError("Expected FP8 K and packed uint8 NVFP4 V caches")
@@ -431,32 +475,40 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
         raise ValueError(f"Invalid NVFP4 V data shape: {tuple(v_cache.shape)}")
     if tuple(v_block_scales.shape) != expected_sf_shape:
         raise ValueError(f"Invalid NVFP4 V scale shape: {tuple(v_block_scales.shape)}")
+    if (
+        staging_workspace.dtype != torch.uint8
+        or staging_workspace.device != k_cache.device
+        or not staging_workspace.is_contiguous()
+    ):
+        raise ValueError(
+            "Staging workspace must be contiguous uint8 on the cache device"
+        )
 
     batch_size, num_pages_per_seq = block_tables_prefill.shape
     num_page_refs = batch_size * num_pages_per_seq
-    staged_v_cache = torch.empty(
-        (
+    staged_v_bytes, table_offset, total_bytes = _fp8_k_nvfp4_v_staging_layout(
+        num_page_refs, num_kv_heads, block_size, head_size
+    )
+    if total_bytes > staging_workspace.numel():
+        return None
+    staged_v_cache = (
+        staging_workspace[:staged_v_bytes]
+        .view(FP8_DTYPE)
+        .view(
             num_page_refs + 1,
             num_kv_heads,
             block_size,
             head_size,
-        ),
-        dtype=FP8_DTYPE,
-        device=k_cache.device,
+        )
     )
-    staged_v_block_table = torch.arange(
-        1,
-        num_page_refs + 1,
-        dtype=torch.int32,
-        device=block_tables_prefill.device,
-    ).reshape(batch_size, num_pages_per_seq)
-    staged_v_block_table = torch.where(
-        block_tables_prefill >= 0,
-        staged_v_block_table,
-        torch.full_like(staged_v_block_table, -1),
-    )
-    staged_block_table = torch.stack(
-        (block_tables_prefill, staged_v_block_table), dim=1
+    staged_block_table = (
+        staging_workspace[table_offset:total_bytes]
+        .view(torch.int32)
+        .view(
+            batch_size,
+            2,
+            num_pages_per_seq,
+        )
     )
 
     scale_groups_per_page = block_size * (head_size // 16)
@@ -469,6 +521,7 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
         v_block_scales,
         block_tables_prefill,
         staged_v_cache,
+        staged_block_table,
         block_tables_prefill.stride(0),
         v_cache.stride(0),
         v_cache.stride(1),
@@ -492,18 +545,11 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
 
 def use_staged_fp8_k_nvfp4_v_prefill(
     max_q_len: int,
-    *,
-    is_dummy_run: bool = False,
-    for_cudagraph_capture: bool = False,
+    max_seq_len: int,
 ) -> bool:
-    min_q_len = envs.VLLM_FP8_K_NVFP4_V_STAGED_PREFILL_MIN_Q
-    return (
-        not is_dummy_run
-        and not for_cudagraph_capture
-        and min_q_len > 0
-        # Amortize the one-time V conversion over enough query work. Small
-        # prefills remain on the native mixed context kernel.
-        and max_q_len >= max(min_q_len, _FP8_K_NVFP4_V_STAGING_MIN_Q)
+    min_work = envs.VLLM_FP8_K_NVFP4_V_STAGED_PREFILL_MIN_WORK
+    return min_work > 0 and max_q_len * max_seq_len >= max(
+        min_work, _FP8_K_NVFP4_V_STAGING_MIN_WORK
     )
 
 
@@ -726,10 +772,7 @@ class FlashInferBackend(AttentionBackend):
             return torch.float8_e4m3fn
         elif kv_cache_dtype == "fp8_e5m2":
             return torch.float8_e5m2
-        elif (
-            kv_cache_dtype.startswith("nvfp4")
-            or kv_cache_dtype == "fp8_k_nvfp4_v"
-        ):
+        elif kv_cache_dtype.startswith("nvfp4") or kv_cache_dtype == "fp8_k_nvfp4_v":
             return torch.uint8
         else:
             raise ValueError(f"Unrecognized dtype: {kv_cache_dtype}")
@@ -1872,17 +1915,9 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                     self.is_kvcache_fp8_k_nvfp4_v
                     and use_staged_fp8_k_nvfp4_v_prefill(
                         max_q_len_prefill,
-                        is_dummy_run=common_attn_metadata.is_dummy_run,
-                        for_cudagraph_capture=for_cudagraph_capture,
+                        max_seq_len,
                     )
                 )
-                if stage_mixed_kv_as_fp8:
-                    # Staging copies one page per block-table entry. Exclude the
-                    # unused fixed-width tail before allocating the FP8 cache.
-                    max_num_blocks = cdiv(max_seq_len, page_size)
-                    prefill_block_tables = canonicalize_singleton_dim_strides(
-                        prefill_block_tables[:, :max_num_blocks].contiguous()
-                    )
                 attn_metadata.prefill = TRTLLMPrefill(
                     block_tables=prefill_block_tables,
                     seq_lens=prefill_seq_lens,
@@ -2109,6 +2144,11 @@ class FlashInferImpl(AttentionImpl):
         self.is_kvcache_fp8_k_nvfp4_v = kv_cache_dtype == "fp8_k_nvfp4_v"
         self.uses_nvfp4_cache = self.is_kvcache_nvfp4 or self.is_kvcache_fp8_k_nvfp4_v
         self.kv_cache_dtype = "nvfp4" if self.is_kvcache_nvfp4 else kv_cache_dtype
+        self._fp8_k_nvfp4_v_staging_workspace = (
+            _get_fp8_k_nvfp4_v_staging_workspace()
+            if self.is_kvcache_fp8_k_nvfp4_v
+            else None
+        )
         if self.is_kvcache_fp8_k_nvfp4_v and sliding_window is not None:
             raise NotImplementedError(
                 "fp8_k_nvfp4_v currently supports dense attention only"
@@ -2166,8 +2206,7 @@ class FlashInferImpl(AttentionImpl):
         ):
             device = torch.device("cuda", torch.cuda.current_device())
             max_runtime_heads = (
-                num_heads
-                * vllm_config.parallel_config.decode_context_parallel_size
+                num_heads * vllm_config.parallel_config.decode_context_parallel_size
             )
             counter_bytes = get_trtllm_gen_multi_ctas_kv_counter_bytes(
                 vllm_config.scheduler_config.max_num_seqs,
@@ -2592,23 +2631,39 @@ class FlashInferImpl(AttentionImpl):
                     assert attn_metadata.q_data_type_prefill == FP8_DTYPE, (
                         "FP8-K/NVFP4-V requires FP8 quantized queries"
                     )
+                    staged = None
                     if attn_metadata.prefill.stage_mixed_kv_as_fp8:
                         mixed_k_cache, mixed_v_cache = packed_kv_data
                         _, mixed_v_scales = packed_kv_block_scales
                         assert mixed_v_scales is not None
-                        (
-                            mock_kv_cache,
-                            mock_block_table,
-                            uses_shared_paged_kv_idx,
-                        ) = (
-                            trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
+                        max_num_blocks = cdiv(
+                            attn_metadata.prefill.max_seq_len,
+                            mixed_v_cache.shape[2],
+                        )
+                        staging_workspace = self._fp8_k_nvfp4_v_staging_workspace
+                        if staging_workspace is not None:
+                            staged = trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
                                 mixed_k_cache,
                                 mixed_v_cache,
                                 mixed_v_scales,
-                                block_tables_prefill,
+                                block_tables_prefill[:, :max_num_blocks],
+                                staging_workspace,
                             )
-                        )
-                    else:
+                        if staged is not None:
+                            (
+                                mock_kv_cache,
+                                mock_block_table,
+                                uses_shared_paged_kv_idx,
+                            ) = staged
+                        else:
+                            logger.warning_once(
+                                "FP8-K/NVFP4-V staging workspace is too small; "
+                                "falling back to native mixed prefill attention. "
+                                "Increase "
+                                "VLLM_FP8_K_NVFP4_V_STAGING_WORKSPACE_SIZE to "
+                                "stage this workload."
+                            )
+                    if staged is None:
                         mock_kv_cache = packed_kv_data
                         mock_block_table = block_tables_prefill
                         prefill_kv_block_scales = packed_kv_block_scales

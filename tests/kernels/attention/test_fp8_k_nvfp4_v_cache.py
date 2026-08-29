@@ -12,11 +12,11 @@ from vllm import envs
 from vllm.platforms import current_platform
 from vllm.platforms.interface import DeviceCapability
 from vllm.utils.torch_utils import fp8_k_nvfp4_v_cache_split_views
-from vllm.v1.attention.backend import CommonAttentionMetadata
 from vllm.v1.attention.backends.flashinfer import (
     FlashInferBackend,
     FlashInferDecodeKernel,
     FlashInferMetadataBuilder,
+    _fp8_k_nvfp4_v_staging_layout,
     trtllm_prefill_attn_fp8_k_nvfp4_v_unpack,
     use_staged_fp8_k_nvfp4_v_prefill,
 )
@@ -30,6 +30,18 @@ pytestmark = pytest.mark.skipif(
 def _to_fp8(x: torch.Tensor) -> tuple[torch.Tensor, float]:
     scale = float(x.abs().amax().item() / torch.finfo(torch.float8_e4m3fn).max)
     return (x / scale).to(torch.float8_e4m3fn), scale
+
+
+def _make_staging_workspace(
+    k_cache: torch.Tensor, block_tables: torch.Tensor
+) -> torch.Tensor:
+    _, _, workspace_size = _fp8_k_nvfp4_v_staging_layout(
+        block_tables.numel(),
+        k_cache.shape[1],
+        k_cache.shape[2],
+        k_cache.shape[3],
+    )
+    return torch.empty(workspace_size, dtype=torch.uint8, device=k_cache.device)
 
 
 def test_fp8_k_nvfp4_v_query_dtype_is_e4m3() -> None:
@@ -117,101 +129,14 @@ def test_fp8_k_nvfp4_v_routes_spec_decode_to_context() -> None:
 def test_fp8_k_nvfp4_v_staged_prefill_threshold(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(envs, "VLLM_FP8_K_NVFP4_V_STAGED_PREFILL_MIN_Q", 8192)
+    monkeypatch.setattr(envs, "VLLM_FP8_K_NVFP4_V_STAGED_PREFILL_MIN_WORK", 1024 * 1024)
 
-    assert not use_staged_fp8_k_nvfp4_v_prefill(1)
-    assert not use_staged_fp8_k_nvfp4_v_prefill(8191)
-    assert use_staged_fp8_k_nvfp4_v_prefill(8192)
+    assert not use_staged_fp8_k_nvfp4_v_prefill(127, 8192)
+    assert use_staged_fp8_k_nvfp4_v_prefill(128, 8192)
 
-    monkeypatch.setattr(envs, "VLLM_FP8_K_NVFP4_V_STAGED_PREFILL_MIN_Q", 1)
-    assert not use_staged_fp8_k_nvfp4_v_prefill(511)
-    assert use_staged_fp8_k_nvfp4_v_prefill(512)
-
-
-def test_fp8_k_nvfp4_v_disables_staging_for_cudagraph_capture(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    builder = FlashInferMetadataBuilder.__new__(FlashInferMetadataBuilder)
-    observed: dict[str, object] = {}
-
-    def fake_build(**kwargs: object) -> object:
-        observed.update(kwargs)
-        return object()
-
-    monkeypatch.setattr(builder, "build", fake_build)
-    common_attn_metadata = SimpleNamespace()
-    result = builder.build_for_cudagraph_capture(common_attn_metadata)
-
-    assert result is not None
-    assert observed == {
-        "common_prefix_len": 0,
-        "common_attn_metadata": common_attn_metadata,
-        "for_cudagraph_capture": True,
-    }
-
-
-def test_fp8_k_nvfp4_v_staging_requires_real_request(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(envs, "VLLM_FP8_K_NVFP4_V_STAGED_PREFILL_MIN_Q", 2)
-
-    assert use_staged_fp8_k_nvfp4_v_prefill(8192)
-    assert not use_staged_fp8_k_nvfp4_v_prefill(8192, is_dummy_run=True)
-    assert not use_staged_fp8_k_nvfp4_v_prefill(
-        8192, for_cudagraph_capture=True
-    )
-
-
-def test_fp8_k_nvfp4_v_staged_prefill_preserves_dummy_metadata() -> None:
-    common = CommonAttentionMetadata(
-        query_start_loc=torch.tensor([0, 2, 4]),
-        query_start_loc_cpu=torch.tensor([0, 2, 4]),
-        seq_lens=torch.tensor([2, 2]),
-        num_reqs=2,
-        num_actual_tokens=4,
-        max_query_len=2,
-        max_seq_len=2,
-        block_table_tensor=torch.zeros((2, 1), dtype=torch.int32),
-        slot_mapping=torch.arange(4),
-        is_dummy_run=True,
-    )
-
-    assert common.unpadded(num_actual_tokens=2, num_actual_reqs=1).is_dummy_run
-
-
-def test_fp8_k_nvfp4_v_staged_prefill_v2_metadata_propagates_dummy_run() -> None:
-    from vllm.v1.worker.gpu.attn_utils import build_attn_metadata
-
-    class MetadataBuilder:
-        def build(
-            self,
-            common_prefix_len: int,
-            common_attn_metadata: CommonAttentionMetadata,
-        ) -> CommonAttentionMetadata:
-            assert common_prefix_len == 0
-            return common_attn_metadata
-
-    builder = MetadataBuilder()
-    attn_group = SimpleNamespace(
-        layer_names=["layer"],
-        get_metadata_builder=lambda _: builder,
-    )
-    metadata = build_attn_metadata(
-        attn_groups=[[attn_group]],
-        num_reqs=1,
-        num_tokens=2,
-        query_start_loc_gpu=torch.tensor([0, 2]),
-        query_start_loc_cpu=torch.tensor([0, 2]),
-        max_query_len=2,
-        seq_lens=torch.tensor([2]),
-        max_seq_len=2,
-        block_tables=(torch.zeros((1, 1), dtype=torch.int32),),
-        slot_mappings=torch.zeros((1, 2), dtype=torch.int64),
-        kv_cache_config=SimpleNamespace(kv_cache_groups=[object()]),
-        is_dummy_run=True,
-    )
-
-    assert metadata["layer"].is_dummy_run
+    monkeypatch.setattr(envs, "VLLM_FP8_K_NVFP4_V_STAGED_PREFILL_MIN_WORK", 1)
+    assert not use_staged_fp8_k_nvfp4_v_prefill(63, 8192)
+    assert use_staged_fp8_k_nvfp4_v_prefill(64, 8192)
 
 
 @torch.inference_mode()
@@ -258,9 +183,14 @@ def test_fp8_k_nvfp4_v_staged_prefill_values(head_size: int) -> None:
             ]
 
     block_tables = torch.tensor([[0, 2], [4, -1]], dtype=torch.int32, device="cuda")
+    staging_workspace = _make_staging_workspace(k_cache, block_tables)
     staged_cache, staged_block_tables, uses_shared_paged_kv_idx = (
         trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
-            k_cache, v_cache, physical_scales, block_tables
+            k_cache,
+            v_cache,
+            physical_scales,
+            block_tables,
+            staging_workspace,
         )
     )
     e2m1 = torch.tensor(
@@ -311,6 +241,99 @@ def test_fp8_k_nvfp4_v_staged_prefill_values(head_size: int) -> None:
 
 
 @torch.inference_mode()
+def test_fp8_k_nvfp4_v_staged_prefill_cuda_graph_replay() -> None:
+    num_pages, num_heads, block_size, head_size = 3, 1, 8, 128
+    k_cache = torch.zeros(
+        num_pages,
+        num_heads,
+        block_size,
+        head_size,
+        dtype=torch.float8_e4m3fn,
+        device="cuda",
+    )
+    v_cache = torch.stack(
+        [
+            torch.full(
+                (num_heads, block_size, head_size // 2),
+                0x11 * (page + 1),
+                dtype=torch.uint8,
+                device="cuda",
+            )
+            for page in range(num_pages)
+        ]
+    )
+    v_block_scales = torch.ones(
+        num_pages,
+        num_heads,
+        block_size,
+        head_size // 16,
+        dtype=torch.float8_e4m3fn,
+        device="cuda",
+    )
+    block_tables = torch.tensor([[0, 1]], dtype=torch.int32, device="cuda")
+    staging_workspace = _make_staging_workspace(k_cache, block_tables)
+
+    trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
+        k_cache,
+        v_cache,
+        v_block_scales,
+        block_tables,
+        staging_workspace,
+    )
+    torch.cuda.synchronize()
+
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
+            k_cache,
+            v_cache,
+            v_block_scales,
+            block_tables,
+            staging_workspace,
+        )
+    assert captured is not None
+    staged_cache, staged_block_tables, _ = captured
+
+    block_tables.copy_(torch.tensor([[2, -1]], dtype=torch.int32, device="cuda"))
+    graph.replay()
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(
+        staged_block_tables,
+        torch.tensor([[[2, -1], [1, -1]]], dtype=torch.int32, device="cuda"),
+    )
+    _, staged_v_cache = staged_cache
+    torch.testing.assert_close(
+        staged_v_cache[1].float(),
+        torch.full(
+            staged_v_cache[1].shape,
+            1.5,
+            dtype=torch.float32,
+            device="cuda",
+        ),
+    )
+
+
+@torch.inference_mode()
+def test_fp8_k_nvfp4_v_staged_prefill_rejects_small_workspace() -> None:
+    k_cache = torch.zeros(1, 1, 8, 128, dtype=torch.float8_e4m3fn, device="cuda")
+    v_cache = torch.zeros(1, 1, 8, 64, dtype=torch.uint8, device="cuda")
+    v_block_scales = torch.ones(1, 1, 8, 8, dtype=torch.float8_e4m3fn, device="cuda")
+    block_tables = torch.zeros(1, 1, dtype=torch.int32, device="cuda")
+
+    assert (
+        trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
+            k_cache,
+            v_cache,
+            v_block_scales,
+            block_tables,
+            torch.empty(1, dtype=torch.uint8, device="cuda"),
+        )
+        is None
+    )
+
+
+@torch.inference_mode()
 def test_fp8_k_nvfp4_v_store_rejects_fp16() -> None:
     page_size, num_heads, head_size = 64, 1, 128
     total_dim = head_size + head_size // 2 + head_size // 16
@@ -322,9 +345,7 @@ def test_fp8_k_nvfp4_v_store_rejects_fp16() -> None:
         dtype=torch.uint8,
         device="cuda",
     )
-    key = torch.randn(
-        1, num_heads, head_size, dtype=torch.float16, device="cuda"
-    )
+    key = torch.randn(1, num_heads, head_size, dtype=torch.float16, device="cuda")
     value = torch.randn_like(key)
     slot_mapping = torch.zeros(1, dtype=torch.int64, device="cuda")
     scale = torch.ones(1, dtype=torch.float32, device="cuda")
@@ -434,9 +455,14 @@ def test_fp8_k_nvfp4_v_staged_prefill_context(head_size: int) -> None:
     block_tables = torch.arange(
         batch_size * pages_per_seq, dtype=torch.int32, device="cuda"
     ).reshape(batch_size, pages_per_seq)
+    staging_workspace = _make_staging_workspace(k_cache, block_tables)
     staged_cache, staged_block_tables, uses_shared_paged_kv_idx = (
         trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
-            k_cache, v_cache, v_block_scales, block_tables
+            k_cache,
+            v_cache,
+            v_block_scales,
+            block_tables,
+            staging_workspace,
         )
     )
     # Staging preserves normalized FP8 K. The global k_scale is applied by
@@ -478,9 +504,7 @@ def test_fp8_k_nvfp4_v_staged_prefill_context(head_size: int) -> None:
         seq_lens=seq_lens,
         max_q_len=int(q_lens.max().item()),
         max_kv_len=int(seq_lens.max().item()),
-        bmm1_scale=(
-            context_q_scale * float(k_scale.item()) / math.sqrt(head_size)
-        ),
+        bmm1_scale=(context_q_scale * float(k_scale.item()) / math.sqrt(head_size)),
         bmm2_scale=float(v_scale.item()),
         batch_size=batch_size,
         cum_seq_lens_q=cum_seq_lens_q,

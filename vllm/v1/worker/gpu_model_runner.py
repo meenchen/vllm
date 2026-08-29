@@ -2361,7 +2361,6 @@ class GPUModelRunner(
         max_num_sampled_tokens: int | None = None,
         use_spec_decode: bool = False,
         for_cudagraph_capture: bool = False,
-        is_dummy_run: bool = False,
         num_scheduled_tokens: dict[str, int] | None = None,
         cascade_attn_prefix_lens: list[list[int]] | None = None,
         slot_mappings: dict[int, torch.Tensor] | None = None,
@@ -2511,7 +2510,6 @@ class GPUModelRunner(
             block_table_tensor=block_table_gid_0,
             slot_mapping=slot_mapping_gid_0,
             causal=True,
-            is_dummy_run=is_dummy_run,
             is_prefilling=is_prefilling,
             positions=self.positions[:num_tokens_padded],
             mm_req_doc_ranges=req_doc_ranges,
@@ -6180,7 +6178,6 @@ class GPUModelRunner(
                         is_graph_capturing
                         or cudagraph_runtime_mode == CUDAGraphMode.FULL
                     ),
-                    is_dummy_run=True,
                     slot_mappings=slot_mappings_by_group,
                     use_spec_decode=self.speculative_config is not None,
                 )

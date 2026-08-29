@@ -1164,7 +1164,6 @@ class SpecDecodeBaseProposer:
             block_table_tensor=common_attn_metadata.block_table_tensor,
             slot_mapping=common_attn_metadata.slot_mapping[:total_num_tokens],
             causal=True,
-            is_dummy_run=common_attn_metadata.is_dummy_run,
             dcp_local_seq_lens=common_attn_metadata.dcp_local_seq_lens,
         )
 
@@ -1276,7 +1275,6 @@ class SpecDecodeBaseProposer:
             block_table_tensor=common_attn_metadata.block_table_tensor,
             slot_mapping=common_attn_metadata.slot_mapping[token_indices],
             causal=True,
-            is_dummy_run=common_attn_metadata.is_dummy_run,
             dcp_local_seq_lens=common_attn_metadata.dcp_local_seq_lens,
         )
 

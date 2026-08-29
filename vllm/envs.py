@@ -218,7 +218,8 @@ if TYPE_CHECKING:
     VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS: list[str] | None = None
     VLLM_FLASHINFER_ALLREDUCE_BACKEND: Literal["auto", "trtllm", "mnnvl"] = "auto"
     VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE: int = 394 * 1024 * 1024
-    VLLM_FP8_K_NVFP4_V_STAGED_PREFILL_MIN_Q: int = 0
+    VLLM_FP8_K_NVFP4_V_STAGED_PREFILL_MIN_WORK: int = 0
+    VLLM_FP8_K_NVFP4_V_STAGING_WORKSPACE_SIZE: int = 256 * 1024 * 1024
     VLLM_XGRAMMAR_CACHE_MB: int = 0
     VLLM_REGEX_COMPILATION_TIMEOUT_S: int = 5
     VLLM_MSGPACK_ZERO_COPY_THRESHOLD: int = 256
@@ -1736,10 +1737,15 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE": lambda: int(
         os.getenv("VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE", str(394 * 1024 * 1024))
     ),
-    # Stage mixed KV into FP8 for prefill queries at least this long. Zero keeps
-    # the native mixed context kernel for every prefill.
-    "VLLM_FP8_K_NVFP4_V_STAGED_PREFILL_MIN_Q": lambda: int(
-        os.getenv("VLLM_FP8_K_NVFP4_V_STAGED_PREFILL_MIN_Q", "0")
+    # Stage mixed KV into FP8 when max_query_len * max_seq_len reaches this
+    # amount of attention work. Zero keeps the native mixed context kernel.
+    "VLLM_FP8_K_NVFP4_V_STAGED_PREFILL_MIN_WORK": lambda: int(
+        os.getenv("VLLM_FP8_K_NVFP4_V_STAGED_PREFILL_MIN_WORK", "0")
+    ),
+    # Fixed-address scratch shared by mixed-KV attention layers. It is charged
+    # to vLLM's normal device-memory accounting before CUDA graph capture.
+    "VLLM_FP8_K_NVFP4_V_STAGING_WORKSPACE_SIZE": lambda: int(
+        os.getenv("VLLM_FP8_K_NVFP4_V_STAGING_WORKSPACE_SIZE", str(256 * 1024 * 1024))
     ),
     # Control the maximum number of tokens per expert supported by the
     # NVFP4 MoE CUTLASS Kernel. This value is used to create a buffer for
