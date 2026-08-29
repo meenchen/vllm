@@ -15,6 +15,7 @@ from flashinfer import (
     BatchPrefillWithPagedKVCacheWrapper,
     BatchPrefillWithRaggedKVCacheWrapper,
     MultiLevelCascadeAttentionWrapper,
+    nvfp4_kv_dequantize_pages_to_fp8,
 )
 from flashinfer.decode import fast_decode_plan, trtllm_batch_decode_with_kv_cache
 from flashinfer.prefill import trtllm_batch_context_with_kv_cache
@@ -304,8 +305,6 @@ def trtllm_prefill_attn_kvfp8_dequant(
     return mock_kv_cache, mock_block_table
 
 
-_FP8_K_NVFP4_V_STAGING_BLOCK_SCALES = 512
-_FP8_K_NVFP4_V_STAGING_NUM_WARPS = 4
 _FP8_K_NVFP4_V_STAGING_MIN_WORK = 512 * 1024
 _FP8_K_NVFP4_V_STAGING_ALIGNMENT = 256
 
@@ -324,132 +323,6 @@ def _fp8_k_nvfp4_v_staging_layout(
     )
     total_bytes = table_offset + 2 * num_page_refs * torch.int32.itemsize
     return staged_cache_bytes, staged_v_offset, table_offset, total_bytes
-
-
-@triton.jit
-def _nvfp4_e2m1_to_fp16(fp4):
-    magnitude_code = fp4 & 0x7
-    magnitude_bits = tl.where(
-        magnitude_code == 0,
-        0,
-        tl.where(
-            magnitude_code == 1,
-            0x3800,
-            0x3800 + magnitude_code * 0x200,
-        ),
-    )
-    fp16_bits = magnitude_bits | ((fp4 & 0x8) << 12)
-    return fp16_bits.to(tl.uint16).to(tl.float16, bitcast=True)
-
-
-@triton.jit(
-    do_not_specialize=[
-        "block_table_stride",
-        "num_pages_per_seq",
-        "num_kv_heads",
-        "scale_groups_per_page",
-    ]
-)
-def _trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
-    v_cache_ptr,
-    v_scale_ptr,
-    block_tables_ptr,
-    staged_v_cache_ptr,
-    staged_block_tables_ptr,
-    block_table_stride,
-    v_stride_page,
-    v_stride_head,
-    v_stride_token,
-    sf_stride_page,
-    sf_stride_head,
-    sf_stride_token,
-    dst_stride_page,
-    dst_stride_head,
-    dst_stride_token,
-    num_src_pages,
-    num_pages_per_seq,
-    num_kv_heads,
-    scale_groups_per_page,
-    HEAD_SIZE: tl.constexpr,
-    BLOCK_SCALES: tl.constexpr,
-):
-    # The flattened staging cache can exceed 2^31 elements.
-    page_head_idx = tl.program_id(0).to(tl.int64)
-    scale_block_idx = tl.program_id(1).to(tl.int64)
-    page_pos = page_head_idx // num_kv_heads
-    head_idx = page_head_idx % num_kv_heads
-    batch_idx = page_pos // num_pages_per_seq
-    page_idx = page_pos % num_pages_per_seq
-
-    src_page = tl.load(block_tables_ptr + batch_idx * block_table_stride + page_idx).to(
-        tl.int64
-    )
-    valid_page = (src_page >= 0) & (src_page < num_src_pages)
-    safe_page = tl.maximum(0, tl.minimum(src_page, num_src_pages - 1))
-    table_mask = (head_idx == 0) & (scale_block_idx == 0)
-    table_offset = batch_idx * 2 * num_pages_per_seq + page_idx
-    tl.store(
-        staged_block_tables_ptr + table_offset,
-        tl.where(valid_page, src_page, -1),
-        mask=table_mask,
-    )
-    tl.store(
-        staged_block_tables_ptr + table_offset + num_pages_per_seq,
-        tl.where(valid_page, page_pos + 1, -1),
-        mask=table_mask,
-    )
-    logical_scale = (scale_block_idx * BLOCK_SCALES + tl.arange(0, BLOCK_SCALES)).to(
-        tl.int64
-    )
-    valid_scale = logical_scale < scale_groups_per_page
-    mask = valid_page & valid_scale
-    scale_dim = HEAD_SIZE // 16
-    token_idx = logical_scale // scale_dim
-    scale_idx = logical_scale % scale_dim
-
-    scale_group = scale_dim // 4
-    swizzled_token = (token_idx // 4) * 4 + scale_idx // scale_group
-    swizzled_scale = (scale_idx % scale_group) * 4 + token_idx % 4
-    sf_offset = (
-        safe_page * sf_stride_page
-        + head_idx * sf_stride_head
-        + swizzled_token * sf_stride_token
-        + swizzled_scale
-    )
-    block_scale = tl.load(v_scale_ptr + sf_offset, mask=mask, other=0.0).to(tl.float16)
-
-    # One lane owns one 16-value group. Read the NVFP4 V scale and each packed
-    # byte once before publishing both nibbles.
-    packed_byte = tl.arange(0, 8).to(tl.int64)
-    packed_dim = scale_idx[:, None] * 8 + packed_byte[None, :]
-    v_offset = (
-        safe_page * v_stride_page
-        + head_idx * v_stride_head
-        + token_idx[:, None] * v_stride_token
-        + packed_dim
-    )
-    packed_v = tl.load(v_cache_ptr + v_offset, mask=mask[:, None], other=0).to(tl.int32)
-    v_low = _nvfp4_e2m1_to_fp16(packed_v & 0xF) * block_scale[:, None]
-    v_high = _nvfp4_e2m1_to_fp16(packed_v >> 4) * block_scale[:, None]
-
-    dst_page = page_pos + 1
-    dim_low = scale_idx[:, None] * 16 + packed_byte[None, :] * 2
-    dst_offset_low = (
-        dst_page * dst_stride_page
-        + head_idx * dst_stride_head
-        + token_idx[:, None] * dst_stride_token
-        + dim_low
-    )
-    tl.store(
-        staged_v_cache_ptr + dst_offset_low,
-        v_low,
-        mask=mask[:, None],
-    )
-    tl.store(
-        staged_v_cache_ptr + dst_offset_low + 1,
-        v_high,
-        mask=mask[:, None],
-    )
 
 
 def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
@@ -512,34 +385,16 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
         )
     )
 
-    scale_groups_per_page = block_size * (head_size // 16)
-    grid = (
-        batch_size * num_pages_per_seq * num_kv_heads,
-        cdiv(scale_groups_per_page, _FP8_K_NVFP4_V_STAGING_BLOCK_SCALES),
-    )
-    _trtllm_prefill_attn_fp8_k_nvfp4_v_unpack[grid](
+    nvfp4_kv_dequantize_pages_to_fp8(
         v_cache,
         v_block_scales,
-        block_tables_prefill,
+        block_tables_prefill.view(-1),
+        None,
         staged_v_cache,
-        staged_block_table,
-        block_tables_prefill.stride(0),
-        v_cache.stride(0),
-        v_cache.stride(1),
-        v_cache.stride(2),
-        v_block_scales.stride(0),
-        v_block_scales.stride(1),
-        v_block_scales.stride(2),
-        staged_v_cache.stride(0),
-        staged_v_cache.stride(-3),
-        staged_v_cache.stride(-2),
-        num_pages,
-        num_pages_per_seq,
-        num_kv_heads,
-        scale_groups_per_page,
-        HEAD_SIZE=head_size,
-        BLOCK_SCALES=_FP8_K_NVFP4_V_STAGING_BLOCK_SCALES,
-        num_warps=_FP8_K_NVFP4_V_STAGING_NUM_WARPS,
+        kv_layout="HND",
+        sf_layout="swizzled_4x4",
+        compact_output=True,
+        output_page_indices=staged_block_table,
     )
     return (k_cache, staged_v_cache), staged_block_table, False
 
