@@ -182,7 +182,11 @@ def test_fp8_k_nvfp4_v_staged_prefill_values(head_size: int) -> None:
                 :, :, token, scale
             ]
 
-    block_tables = torch.tensor([[0, 2], [4, -1]], dtype=torch.int32, device="cuda")
+    padded_block_tables = torch.tensor(
+        [[0, 2, -1], [4, -1, -1]], dtype=torch.int32, device="cuda"
+    )
+    block_tables = padded_block_tables[:, :2]
+    assert not block_tables.is_contiguous()
     staging_workspace = _make_staging_workspace(k_cache, block_tables)
     staged_cache, staged_block_tables, uses_shared_paged_kv_idx = (
         trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(

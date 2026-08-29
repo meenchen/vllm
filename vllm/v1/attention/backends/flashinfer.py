@@ -388,7 +388,7 @@ def trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
     nvfp4_kv_dequantize_pages_to_fp8(
         v_cache,
         v_block_scales,
-        block_tables_prefill.view(-1),
+        block_tables_prefill,
         None,
         staged_v_cache,
         kv_layout="HND",
