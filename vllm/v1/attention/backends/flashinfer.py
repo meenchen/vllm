@@ -327,21 +327,19 @@ def _fp8_k_nvfp4_v_staging_layout(
 
 
 @triton.jit
-def _nvfp4_e2m1_to_float(fp4):
-    sign = tl.where((fp4 & 0x8) == 0, 1.0, -1.0)
+def _nvfp4_e2m1_to_fp16(fp4):
     magnitude_code = fp4 & 0x7
-    exponent = magnitude_code >> 1
-    mantissa = (magnitude_code & 1).to(tl.float32)
-    magnitude = tl.where(
-        exponent == 0,
-        mantissa * 0.5,
+    magnitude_bits = tl.where(
+        magnitude_code == 0,
+        0,
         tl.where(
-            exponent == 1,
-            1.0 + mantissa * 0.5,
-            tl.where(exponent == 2, 2.0 + mantissa, 4.0 + mantissa * 2.0),
+            magnitude_code == 1,
+            0x3800,
+            0x3800 + magnitude_code * 0x200,
         ),
     )
-    return sign * magnitude
+    fp16_bits = magnitude_bits | ((fp4 & 0x8) << 12)
+    return fp16_bits.to(tl.uint16).to(tl.float16, bitcast=True)
 
 
 @triton.jit(
@@ -418,7 +416,7 @@ def _trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
         + swizzled_token * sf_stride_token
         + swizzled_scale
     )
-    block_scale = tl.load(v_scale_ptr + sf_offset, mask=mask, other=0.0).to(tl.float32)
+    block_scale = tl.load(v_scale_ptr + sf_offset, mask=mask, other=0.0).to(tl.float16)
 
     # One lane owns one 16-value group. Read the NVFP4 V scale and each packed
     # byte once before publishing both nibbles.
@@ -431,8 +429,8 @@ def _trtllm_prefill_attn_fp8_k_nvfp4_v_unpack(
         + packed_dim
     )
     packed_v = tl.load(v_cache_ptr + v_offset, mask=mask[:, None], other=0).to(tl.int32)
-    v_low = _nvfp4_e2m1_to_float(packed_v & 0xF) * block_scale[:, None]
-    v_high = _nvfp4_e2m1_to_float(packed_v >> 4) * block_scale[:, None]
+    v_low = _nvfp4_e2m1_to_fp16(packed_v & 0xF) * block_scale[:, None]
+    v_high = _nvfp4_e2m1_to_fp16(packed_v >> 4) * block_scale[:, None]
 
     dst_page = page_pos + 1
     dim_low = scale_idx[:, None] * 16 + packed_byte[None, :] * 2
