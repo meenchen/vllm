@@ -107,6 +107,27 @@ trtllm_workspace_buffer = None
 fp8_k_nvfp4_v_staging_workspace = None
 
 
+def _resolve_cache_dtype_for_kv_spec(
+    configured_cache_dtype: str, kv_cache_spec: AttentionSpec
+) -> str:
+    """Resolve a layer/group cache dtype when the global dtype is ``auto``."""
+    quant_mode = kv_cache_spec.kv_quant_mode
+    if quant_mode == KVQuantMode.NONE:
+        return "auto"
+    if configured_cache_dtype != "auto":
+        return configured_cache_dtype
+    if quant_mode == KVQuantMode.FP8_PER_TENSOR:
+        return "fp8_e4m3"
+    if quant_mode == KVQuantMode.NVFP4:
+        return "nvfp4"
+    if quant_mode == KVQuantMode.FP8_K_NVFP4_V:
+        return "fp8_k_nvfp4_v"
+    raise ValueError(
+        "FlashInfer cannot resolve layer-wise KV-cache quantization mode "
+        f"{quant_mode.name} from global cache dtype 'auto'."
+    )
+
+
 def _get_trtllm_workspace_buffer():
     global trtllm_workspace_buffer
     if trtllm_workspace_buffer is None:
@@ -566,6 +587,23 @@ class FlashInferBackend(AttentionBackend):
             cache_dtype = vllm_config.cache_config.cache_dtype
             if cache_dtype.startswith("nvfp4") or cache_dtype == "fp8_k_nvfp4_v":
                 return [64]
+            if cache_dtype == "auto":
+                # A checkpoint-owned layer-wise mapping keeps the global
+                # cache dtype at auto. Inspect the already-constructed
+                # attention layers so mixed NVFP4/fp8_k_nvfp4_v groups still
+                # select the kernel-required 64-token block size.
+                layers = vllm_config.compilation_config.static_forward_context
+                if any(
+                    isinstance(
+                        layer_dtype := getattr(layer, "kv_cache_dtype", None), str
+                    )
+                    and (
+                        layer_dtype.startswith("nvfp4")
+                        or layer_dtype == "fp8_k_nvfp4_v"
+                    )
+                    for layer in layers.values()
+                ):
+                    return [64]
 
         # Page sizes >= 128 only run on the trtllm-gen dynamic kernel (GQA/MQA
         # on Blackwell); advertise them only when usable so selection never
@@ -941,7 +979,9 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         self.page_size = self.kv_cache_spec.block_size
 
         if self.kv_cache_spec.kv_quant_mode != KVQuantMode.NONE:
-            self.cache_dtype = self.cache_config.cache_dtype
+            self.cache_dtype = _resolve_cache_dtype_for_kv_spec(
+                self.cache_config.cache_dtype, self.kv_cache_spec
+            )
             # Cannot use self.kv_cache_spec.dtype here because kv_cache_spec
             # storage dtype may not be the same as the op dtype (uint8 vs fp8_e4m3)
             self.is_kvcache_nvfp4 = self.cache_dtype.startswith("nvfp4")

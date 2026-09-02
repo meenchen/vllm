@@ -268,6 +268,11 @@ class Attention(nn.Module, AttentionLayerBase):
         else:
             kv_cache_dtype = "auto"
 
+        if quant_config is not None and kv_cache_dtype == "auto":
+            checkpoint_kv_cache_dtype = quant_config.get_kv_cache_dtype(prefix)
+            if checkpoint_kv_cache_dtype is not None:
+                kv_cache_dtype = checkpoint_kv_cache_dtype
+
         if kv_cache_dtype == "fp8_k_nvfp4_v" and head_size_v not in (
             None,
             head_size,
