@@ -508,6 +508,7 @@ class TestDensePacking:
     def test_layerwise_homogeneous_attention_preserves_exact_pages(self):
         config = _shared_layout_config()
         config.cache_config.kv_cache_layout = "BLHNC"
+        config.cache_config.block_size = 64
         specs = {
             "fp8.0": FullAttentionSpec(
                 block_size=64,
