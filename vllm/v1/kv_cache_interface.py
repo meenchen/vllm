@@ -25,6 +25,7 @@ from vllm.v1.kv_cache_spec_registry import KVCacheSpecRegistry
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
+    from vllm.config.cache import CacheDType
 
 logger = init_logger(__name__)
 
@@ -388,6 +389,9 @@ class AttentionSpec(KVCacheSpec):
     num_kv_heads: int
     head_size: int
     dtype: torch.dtype
+    cache_dtype: CacheDType | None = None
+    """Logical cache dtype used by attention kernels. This is distinct from
+    ``dtype`` because packed formats such as FP8 and NVFP4 use uint8 storage."""
     head_size_v: int = None  # type: ignore[assignment]
     kv_quant_mode: KVQuantMode = KVQuantMode.NONE
     page_size_padded: int | None = None

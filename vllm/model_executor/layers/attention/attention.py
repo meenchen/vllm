@@ -637,6 +637,7 @@ class Attention(nn.Module, AttentionLayerBase):
                     head_size=self.head_size,
                     head_size_v=self.head_size_v,
                     dtype=self.kv_cache_torch_dtype,
+                    cache_dtype=self.kv_cache_dtype,
                     kv_quant_mode=quant_mode,
                     sliding_window=self.sliding_window,
                 )
@@ -650,6 +651,7 @@ class Attention(nn.Module, AttentionLayerBase):
                 head_size=self.head_size,
                 head_size_v=self.head_size_v,
                 dtype=self.kv_cache_torch_dtype,
+                cache_dtype=self.kv_cache_dtype,
                 kv_quant_mode=quant_mode,
                 sliding_window=self.sliding_window,
                 page_size_padded=shared_page,
@@ -661,6 +663,7 @@ class Attention(nn.Module, AttentionLayerBase):
                 head_size=self.head_size,
                 head_size_v=self.head_size_v,
                 dtype=self.kv_cache_torch_dtype,
+                cache_dtype=self.kv_cache_dtype,
                 kv_quant_mode=quant_mode,
             )
 

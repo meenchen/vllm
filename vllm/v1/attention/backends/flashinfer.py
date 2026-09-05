@@ -933,18 +933,12 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         if cache_dtype != "auto":
             return cache_dtype
 
-        quant_mode = self.kv_cache_spec.kv_quant_mode
-        if quant_mode == KVQuantMode.NVFP4:
-            return "nvfp4"
-        if quant_mode == KVQuantMode.FP8_PER_TENSOR:
-            if self.kv_cache_spec.dtype == torch.float8_e4m3fn:
-                return "fp8_e4m3"
-            if self.kv_cache_spec.dtype == torch.float8_e5m2:
-                return "fp8_e5m2"
+        if self.kv_cache_spec.cache_dtype not in (None, "auto"):
+            return self.kv_cache_spec.cache_dtype
 
         raise ValueError(
-            "FlashInfer cannot infer the KV-cache dtype for quantization mode "
-            f"{quant_mode.name} and storage dtype {self.kv_cache_spec.dtype}."
+            "FlashInfer requires a logical cache dtype for quantized "
+            f"KV-cache spec {self.kv_cache_spec}."
         )
 
     @property

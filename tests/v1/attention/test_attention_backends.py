@@ -910,20 +910,20 @@ def test_flashinfer_xqa_query_lens_preserve_cudagraph_padding():
     reason="FlashInfer is not available.",
 )
 @pytest.mark.parametrize(
-    ("quant_mode", "storage_dtype", "expected"),
+    ("cache_dtype", "quant_mode", "expected"),
     [
-        (KVQuantMode.FP8_PER_TENSOR, torch.float8_e4m3fn, "fp8_e4m3"),
-        (KVQuantMode.FP8_PER_TENSOR, torch.float8_e5m2, "fp8_e5m2"),
-        (KVQuantMode.NVFP4, torch.uint8, "nvfp4"),
+        ("fp8_e4m3", KVQuantMode.FP8_PER_TENSOR, "fp8_e4m3"),
+        ("fp8_e5m2", KVQuantMode.FP8_PER_TENSOR, "fp8_e5m2"),
+        ("nvfp4", KVQuantMode.NVFP4, "nvfp4"),
     ],
 )
-def test_flashinfer_resolves_layerwise_cache_dtype(quant_mode, storage_dtype, expected):
+def test_flashinfer_resolves_layerwise_cache_dtype(cache_dtype, quant_mode, expected):
     from vllm.v1.attention.backends import flashinfer as flashinfer_backend
 
     builder = object.__new__(flashinfer_backend.FlashInferMetadataBuilder)
     builder.cache_config = SimpleNamespace(cache_dtype="auto")
     builder.kv_cache_spec = SimpleNamespace(
-        kv_quant_mode=quant_mode, dtype=storage_dtype
+        cache_dtype=cache_dtype, kv_quant_mode=quant_mode, dtype=torch.uint8
     )
 
     assert builder._resolve_cache_dtype() == expected
