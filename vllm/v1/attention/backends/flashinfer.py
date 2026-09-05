@@ -759,7 +759,7 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         self.page_size = self.kv_cache_spec.block_size
 
         if self.kv_cache_spec.kv_quant_mode != KVQuantMode.NONE:
-            self.cache_dtype = self.cache_config.cache_dtype
+            self.cache_dtype = self._resolve_cache_dtype()
             # Cannot use self.kv_cache_spec.dtype here because kv_cache_spec
             # storage dtype may not be the same as the op dtype (uint8 vs fp8_e4m3)
             self.is_kvcache_nvfp4 = self.cache_dtype.startswith("nvfp4")
@@ -799,6 +799,7 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         can_use_xqa_or_trtllm_gen_decode = can_use_trtllm_attention(
             self.num_qo_heads, self.num_kv_heads, is_prefill=False
         )
+
         # Page sizes >= 128 require the trtllm-gen GQA/MQA path (guaranteed by
         # get_supported_kernel_block_sizes).
         assert self.page_size <= 64 or (
@@ -925,6 +926,25 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         )
         self.paged_kv_last_page_len = CpuGpuBuffer(
             max_num_reqs, dtype=torch.int32, device=self.device, pin_memory=False
+        )
+
+    def _resolve_cache_dtype(self) -> str:
+        cache_dtype = self.cache_config.cache_dtype
+        if cache_dtype != "auto":
+            return cache_dtype
+
+        quant_mode = self.kv_cache_spec.kv_quant_mode
+        if quant_mode == KVQuantMode.NVFP4:
+            return "nvfp4"
+        if quant_mode == KVQuantMode.FP8_PER_TENSOR:
+            if self.kv_cache_spec.dtype == torch.float8_e4m3fn:
+                return "fp8_e4m3"
+            if self.kv_cache_spec.dtype == torch.float8_e5m2:
+                return "fp8_e5m2"
+
+        raise ValueError(
+            "FlashInfer cannot infer the KV-cache dtype for quantization mode "
+            f"{quant_mode.name} and storage dtype {self.kv_cache_spec.dtype}."
         )
 
     @property
