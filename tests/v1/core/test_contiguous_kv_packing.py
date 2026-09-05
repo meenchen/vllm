@@ -33,6 +33,7 @@ from vllm.v1.kv_cache_interface import (
     KVCacheGroupSpec,
     KVCacheLayout,
     KVCacheSpec,
+    KVQuantMode,
     MambaSpec,
     MLAAttentionSpec,
     SlidingWindowMLASpec,
@@ -412,13 +413,17 @@ class TestDensePacking:
                 block_size=64,
                 num_kv_heads=1,
                 head_size=128,
-                dtype=torch.float8_e4m3fn,
+                dtype=torch.uint8,
+                cache_dtype="fp8_e4m3",
+                kv_quant_mode=KVQuantMode.FP8_PER_TENSOR,
             ),
             FullAttentionSpec(
                 block_size=64,
                 num_kv_heads=1,
                 head_size=128,
                 dtype=torch.uint8,
+                cache_dtype="nvfp4",
+                kv_quant_mode=KVQuantMode.NVFP4,
                 state_content_bytes=144,
             ),
             MambaSpec(
@@ -450,7 +455,9 @@ class TestDensePacking:
                     block_size=64,
                     num_kv_heads=1,
                     head_size=128,
-                    dtype=torch.float8_e4m3fn,
+                    dtype=torch.uint8,
+                    cache_dtype="fp8_e4m3",
+                    kv_quant_mode=KVQuantMode.FP8_PER_TENSOR,
                 )
                 for i in range(2)
             },
@@ -460,6 +467,8 @@ class TestDensePacking:
                     num_kv_heads=1,
                     head_size=128,
                     dtype=torch.uint8,
+                    cache_dtype="nvfp4",
+                    kv_quant_mode=KVQuantMode.NVFP4,
                     state_content_bytes=144,
                 )
                 for i in range(2)
@@ -494,6 +503,41 @@ class TestDensePacking:
         assert set(views) == set(specs)
         for name, view in views.items():
             assert view.shape[0] == 32, name
+
+    @pytest.mark.skip_global_cleanup
+    def test_layerwise_homogeneous_attention_preserves_exact_pages(self):
+        config = _shared_layout_config()
+        config.cache_config.kv_cache_layout = "BLHNC"
+        specs = {
+            "fp8.0": FullAttentionSpec(
+                block_size=64,
+                num_kv_heads=1,
+                head_size=128,
+                dtype=torch.uint8,
+                cache_dtype="fp8_e4m3",
+                kv_quant_mode=KVQuantMode.FP8_PER_TENSOR,
+            ),
+            "nvfp4.0": FullAttentionSpec(
+                block_size=64,
+                num_kv_heads=1,
+                head_size=128,
+                dtype=torch.uint8,
+                cache_dtype="nvfp4",
+                kv_quant_mode=KVQuantMode.NVFP4,
+                state_content_bytes=144,
+            ),
+        }
+
+        groups = get_kv_cache_groups(config, specs)
+        expected_bytes = sum(spec.page_size_bytes for spec in specs.values())
+        assert _get_kv_cache_bytes_per_block(groups) == expected_bytes
+
+        kv_cache_config = get_kv_cache_config_from_groups(
+            config, groups, expected_bytes * 16
+        )
+        assert kv_cache_config.num_blocks == 16
+        assert resolve_kv_cache_block_sizes(kv_cache_config, config) == (64, 64)
+        assert set(_bind(kv_cache_config, "BLHNC")) == set(specs)
 
     def test_bytes_per_block_is_largest_group(self):
         groups, g1, g2 = _mixed_page_groups()
