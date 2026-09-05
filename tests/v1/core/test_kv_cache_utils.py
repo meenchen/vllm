@@ -137,17 +137,32 @@ def new_kv_cache_spec(
     sliding_window=None,
     attention_chunk_size=None,
     kv_quant_mode=KVQuantMode.NONE,
+    cache_dtype=None,
 ):
     return FullAttentionSpec(
         block_size=block_size,
         num_kv_heads=num_kv_heads,
         head_size=head_size,
         dtype=dtype,
+        cache_dtype=cache_dtype,
         page_size_padded=page_size_padded,
         sliding_window=sliding_window,
         attention_chunk_size=attention_chunk_size,
         kv_quant_mode=kv_quant_mode,
     )
+
+
+def test_attention_spec_merge_preserves_logical_cache_dtype():
+    specs = [
+        new_kv_cache_spec(
+            dtype=torch.uint8,
+            kv_quant_mode=KVQuantMode.FP8_PER_TENSOR,
+            cache_dtype="fp8_e4m3",
+        )
+        for _ in range(2)
+    ]
+
+    assert FullAttentionSpec.merge(specs).cache_dtype == "fp8_e4m3"
 
 
 def test_kv_cache_config_selects_only_transferable_groups():
