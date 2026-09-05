@@ -141,6 +141,7 @@ def algos_owned_by(config_name: str) -> tuple[str, ...]:
     """The linear algos a given config accepts, for its quant_algo validation."""
     return tuple(a for a, (owner, _) in LINEAR_ALGOS.items() if owner == config_name)
 
+
 MODELOPT_MIXED_KV_CACHE_DTYPES = {
     "FP8": "fp8_e4m3",
     "NVFP4": "nvfp4",
@@ -1744,6 +1745,9 @@ class ModelOptMixedPrecisionConfig(ModelOptQuantConfigBase):
                     MODELOPT_MIXED_KV_CACHE_DTYPES[layer_info["quant_algo"]],
                 )
         return None
+
+    def has_layerwise_kv_cache(self) -> bool:
+        return self.kv_cache_quant_method == "MIXED_PRECISION"
 
     def _kv_cache_layer_prefix_candidates(self, prefix: str) -> tuple[str, ...]:
         prefixes = [prefix]

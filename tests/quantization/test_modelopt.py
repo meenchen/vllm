@@ -138,6 +138,7 @@ def test_modelopt_mixed_precision_resolves_layerwise_kv_cache_dtype():
     assert config.get_kv_cache_dtype("model.layers.0.self_attn.attn") == "fp8_e4m3"
     assert config.get_kv_cache_dtype("model.layers.1.self_attn.attn") == "nvfp4"
     assert config.get_kv_cache_dtype("model.layers.2.self_attn.attn") is None
+    assert config.has_layerwise_kv_cache()
 
     mapped_attention = Mock(spec=Attention)
     mapped_attention.__class__ = Attention

@@ -33,6 +33,13 @@ Keep `kv_cache_dtype="auto"` (the default) to use the checkpoint recipe. An
 explicit `--kv-cache-dtype` overrides the recipe for every layer, and
 `--kv-cache-dtype-skip-layers` still takes precedence for selected layers.
 
+For hybrid attention/Mamba models using aligned prefix caching, vLLM keeps the
+attention backend's block size and packs exact per-layer pages in a block-outer
+layout when the backend supports one. This preserves the configured cache
+formats and prefix-cache granularity without padding every layer to the largest
+page. An explicitly selected layer-outer layout, or a backend without
+block-outer support, uses the legacy aligned-page fallback.
+
 This integration supports full FP8 K/V and full NVFP4 K/V layers. A format
 that mixes K and V within one layer, such as FP8 K with NVFP4 V, requires a
 separate attention-kernel implementation.

@@ -272,9 +272,9 @@ def resolve_kv_cache_layout(
     # specs can re-interpret HNC with different sizes as long as the total number of
     # bytes is the same. If not block-compact, each spec must agree on HNC to alias
     # the same page (this aliasing is done by the Hybrid Memory Allocator, HMA).
+    specs = tuple(kv_cache_specs or ())
     hnc_shapes = {
-        (spec.num_heads, spec.num_states, spec.page_size_bytes)
-        for spec in kv_cache_specs or ()
+        (spec.num_heads, spec.num_states, spec.page_size_bytes) for spec in specs
     }
     if len(hnc_shapes) > 1:
         candidates = [m for m in candidates if m.is_block_compact]
@@ -283,6 +283,17 @@ def resolve_kv_cache_layout(
                 "Specs with mixed HNC shapes need a block-compact layout, but "
                 f"none is in every supported set: {supported_layouts}."
             )
+
+    quant_config = getattr(vllm_config, "quant_config", None)
+    prefer_block_outer = (
+        vllm_config.model_config is not None
+        and vllm_config.model_config.is_hybrid
+        and quant_config is not None
+        and quant_config.has_layerwise_kv_cache()
+        and len(hnc_shapes) > 1
+    )
+    if prefer_block_outer:
+        candidates.sort(key=lambda layout: not layout.is_block_outermost)
 
     if (requested := envs.VLLM_KV_CACHE_LAYOUT) is not None:
         layout = _layout_from_name(requested)
